@@ -1,9 +1,11 @@
 # tailscale
-A sole purpose of this machine is to run tailscale.
 
-Why?
+A sole purpose of this machine is to run tailscale via [lima](../).
 
-Tailscale on macOS [seems to disconnect](https://github.com/tailscale/tailscale/issues/594) when switching user account. Thus, unreliable.
+## Why?
+
+Tailscale on macOS [seems to disconnect when switching between user accounts](https://github.com/tailscale/tailscale/issues/594).
+Thus, unreliable to run it on macOS host level for my use case.
 
 Using this lima vm + `ssh host.lima.internal` from the vm should allow to workaround that situation.
 
