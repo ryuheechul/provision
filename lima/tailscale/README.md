@@ -39,6 +39,7 @@ flowchart TD
     remote-machine -- or by proxying via lima-guest --> SSH-Tunneling
     lima-guest -- direct ssh --> macOS-host
     SSH-Tunneling -- ssh jumping --> macOS-host
+    macOS-host -- spawns --> lima-guest
 ```
 
 ```ssh-config
