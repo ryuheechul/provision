@@ -9,12 +9,12 @@ Using this lima vm + `ssh host.lima.internal` from the vm should allow to workar
 
 ## Provision
 
-> installing tailscale is taken care by [./config.yaml](./config.yaml)
+> installing tailscale is taken care by [config.yaml](./config.yaml)
 
 `LIMA_INSTANCE=my-tailscale make start`
 
 ## Access
-> in case exit the shell
+> in case exited the shell
 `LIMA_INSTANCE=my-tailscale make enter`
 
 ## Run Tailscale
@@ -27,7 +27,7 @@ $ make tailscale
 ```
 
 ### More commands
-at [./Makefile](./Makefile)
+at [Makefile](./Makefile)
 
 
 ### Access Mac Host From a Remote Machine
@@ -36,12 +36,12 @@ at [./Makefile](./Makefile)
 ```mermaid
 flowchart TD
     remote-machine -- direct ssh --> lima-guest
-    remote-machine -- via proxying using lima-guest --> SSH-Tunneling
+    remote-machine -- or by proxying via lima-guest --> SSH-Tunneling
     lima-guest -- direct ssh --> macOS-host
     SSH-Tunneling -- ssh jumping --> macOS-host
 ```
 
-```config
+```ssh-config
 # given ~/.ssh/config on a remote machine
 # (being used to connect the macOS host running lima guest)
 # with following example config
