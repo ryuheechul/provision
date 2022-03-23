@@ -15,16 +15,19 @@ teardown-debug:
 
 .PHONY: start
 start:
-	limactl start --tty=false --name=$(LIMA_INSTANCE) ./config.yaml
-	$(MAKE) enter
+	bin/start-or-resume.sh && $(MAKE) enter
 
 .PHONY: enter
 enter:
 	lima
 
 .PHONY: teardown
-teardown:
-	limactl stop $(LIMA_INSTANCE) || limactl delete $(LIMA_INSTANCE)
+teardown: stop
+	limactl delete $(LIMA_INSTANCE)
+
+.PHONY: stop
+stop:
+	limactl stop $(LIMA_INSTANCE) || true
 
 # run this inside vm
 .PHONY: tailscale
