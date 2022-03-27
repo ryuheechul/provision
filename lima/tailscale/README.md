@@ -38,9 +38,9 @@ at [Makefile](./Makefile)
 ```mermaid
 flowchart TD
     remote-machine -- direct ssh --> lima-guest
-    remote-machine -- or by proxying via lima-guest --> SSH-Tunneling
+    remote-machine -- ssh via --> lima-guest-as-jump-server
     lima-guest -- direct ssh --> macOS-host
-    SSH-Tunneling -- ssh jumping --> macOS-host
+    lima-guest-as-jump-server -- for `remote-machine` --> macOS-host
     macOS-host -- spawns --> lima-guest
 ```
 
@@ -48,6 +48,13 @@ flowchart TD
 # given ~/.ssh/config on a remote machine
 # (being used to connect the macOS host running lima guest)
 # with following example config
+
+Host *
+  # optional but this allows you to keep using public/private keys
+  # on local machine without having to move it to the jump host
+  ForwardAgent yes
+  # optional but you maybe want to reduce the payloads on the network
+  Compression yes
 
 Host actual-host
 	HostName host.lima.internal # perspective from lima
@@ -63,7 +70,7 @@ Host remote-lima-guest
 
 `ssh remote-lima-guest` should let you connect to the lima guest directly given the lima guest and remote machine both are connected by tailscale.
 
-`ssh actual-host` should let you connect to the macOS host via lima-guest by [SSH Tunneling](https://wiki.gentoo.org/wiki/SSH_jump_host)
+`ssh actual-host` should let you connect to the macOS host via lima-guest by [SSH jump host](https://wiki.gentoo.org/wiki/SSH_jump_host)
 
 > adding a public key of the remote machine to `~/.ssh/authorized_keys`, would let you avoid typing password of the account of the target machine
 
