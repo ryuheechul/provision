@@ -57,15 +57,15 @@ Host *
   Compression yes
 
 Host actual-host
-	HostName host.lima.internal # perspective from lima
-	ProxyJump remote-lima-guest
-	User my-username
+  HostName host.lima.internal # perspective from lima
+  ProxyJump remote-lima-guest
+  User my-username
 
 # since tailscale is running on this layer
 Host remote-lima-guest
   # should match to the name in your tailscale, alternatively use ip
-	HostName lima-my-tailscale
-	User my-username
+  HostName lima-my-tailscale
+  User my-username
 ```
 
 `ssh remote-lima-guest` should let you connect to the lima guest directly given the lima guest and remote machine both are connected by tailscale.
