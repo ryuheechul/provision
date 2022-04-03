@@ -15,11 +15,13 @@ teardown-debug:
 
 .PHONY: start
 start:
-	bin/start-or-resume.sh && $(MAKE) enter
+	LIMA_INSTANCE=$(LIMA_INSTANCE) \
+		../bin/start-or-resume.sh \
+		&& $(MAKE) enter
 
 .PHONY: enter
 enter:
-	lima
+	LIMA_INSTANCE=$(LIMA_INSTANCE) lima
 
 .PHONY: teardown
 teardown: stop
