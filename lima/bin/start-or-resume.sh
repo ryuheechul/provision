@@ -9,7 +9,7 @@ extracted_name="$(limactl ls --json | jq -r ". | select(.name == \"${instance}\"
 
 # if exist, resume
 # if not, start
-if test "${extracted_name}" == "${instance}"; then
+if test "${extracted_name}" = "${instance}"; then
 	limactl start --tty=false "${LIMA_INSTANCE}"
 else
   config_file_path="./config.yaml"
