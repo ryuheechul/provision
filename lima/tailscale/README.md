@@ -53,6 +53,10 @@ Host *
   # optional but this allows you to keep using public/private keys
   # on local machine without having to move it to the jump host
   ForwardAgent yes
+  
+  # optional and useful if adding keys are not done from a shell already
+  AddKeysToAgent yes 
+  
   # optional but you maybe want to reduce the payloads on the network
   Compression yes
 
