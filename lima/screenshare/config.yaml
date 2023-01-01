@@ -43,7 +43,7 @@ memory: 500MiB
 
 # Disk size
 # 🟢 Builtin default: "100GiB"
-disk: 3GiB
+disk: 5GiB
 
 # Expose host directories to the guest, the mount point might be accessible from all UIDs in the guest
 # 🟢 Builtin default: null (Mount nothing)
