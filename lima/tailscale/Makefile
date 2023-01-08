@@ -13,6 +13,11 @@ debug-enter:
 teardown-debug:
 	limactl stop tailscale-debug || limactl delete tailscale-debug
 
+.PHONY: start-notty
+start-notty:
+	LIMA_INSTANCE=$(LIMA_INSTANCE) \
+		../bin/start-or-resume.sh
+
 .PHONY: start
 start:
 	LIMA_INSTANCE=$(LIMA_INSTANCE) \
