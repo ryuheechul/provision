@@ -114,10 +114,10 @@ ssh:
   loadDotSSHPubKeys: null
   # Forward ssh agent into the instance.
   # 🟢 Builtin default: false
-  forwardAgent: null
+  forwardAgent: true
   # Forward X11 into the instance
   # 🟢 Builtin default: false
-  forwardX11: null
+  forwardX11: true
   # Trust forwarded X11 clients
   # 🟢 Builtin default: false
   forwardX11Trusted: null
@@ -182,7 +182,7 @@ provision:
     /etc/init.d/tailscale start
     # Authenticate and connect your machine to your Tailscale network
     # Probably best to run this manually after start up as it require interactions
-    # sudo tailscale up to login
+    # `sudo tailscale up --ssh` to login
     #
     # just to make life easier
     apk add make

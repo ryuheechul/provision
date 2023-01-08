@@ -28,6 +28,10 @@ start:
 enter:
 	LIMA_INSTANCE=$(LIMA_INSTANCE) lima
 
+.PHONY: edit
+edit:
+	limactl edit $(LIMA_INSTANCE)
+
 .PHONY: teardown
 teardown: stop
 	limactl delete $(LIMA_INSTANCE)
