@@ -5,27 +5,25 @@
 # Default values in this YAML file are specified by `null` instead of Lima's "builtin default" values,
 # so they can be overridden by the $LIMA_HOME/_config/default.yaml mechanism documented at the end of this file.
 
+# VM type: "qemu" or "vz" (on macOS 13 and later).
+# The vmType can be specified only on creating the instance.
+# The vmType of existing instances cannot be changed.
+# 🟢 Builtin default: "qemu"
+vmType: null
+
 # Arch: "default", "x86_64", "aarch64".
 # 🟢 Builtin default: "default" (corresponds to the host architecture)
 arch: null
-
-# OpenStack-compatible disk image.
-# 🟢 Builtin default: null (must be specified)
-# 🔵 This file: Ubuntu 21.10 Impish Indri images
+# This example requires Lima v0.7.0 or later.
 images:
-# Try to use release-yyyyMMdd image if available. Note that release-yyyyMMdd will be removed after several months.
-- location: "https://cloud-images.ubuntu.com/releases/21.10/release-20220201/ubuntu-21.10-server-cloudimg-amd64.img"
+- location: "https://github.com/lima-vm/alpine-lima/releases/download/v0.2.26/alpine-lima-std-3.17.0-x86_64.iso"
   arch: "x86_64"
-  digest: "sha256:73fe1785c60edeb506f191affff0440abcc2de02420bb70865d51d0ff9b28223"
-- location: "https://cloud-images.ubuntu.com/releases/21.10/release-20220201/ubuntu-21.10-server-cloudimg-arm64.img"
+  digest: "sha512:93bf8d52ad2b3a6ef401a1a565f67e4f06f8022ec8963cad36cac4a25253f056ac0b755d1ed56b8993b0261440e0d5d38bad15b271864ed33cd3b02272738672"
+- location: "https://github.com/lima-vm/alpine-lima/releases/download/v0.2.26/alpine-lima-std-3.17.0-aarch64.iso"
   arch: "aarch64"
-  digest: "sha256:1b5b3fe616e1eea4176049d434a360344a7d471f799e151190f21b0a27f0b424"
-# Fallback to the latest release image.
-# Hint: run `limactl prune` to invalidate the cache
-- location: "https://cloud-images.ubuntu.com/releases/21.10/release/ubuntu-21.10-server-cloudimg-amd64.img"
-  arch: "x86_64"
-- location: "https://cloud-images.ubuntu.com/releases/21.10/release/ubuntu-21.10-server-cloudimg-arm64.img"
-  arch: "aarch64"
+  digest: "sha512:aacd3a9e7a3231553bcee879c6770b379afbfad3dcfac7f274a80d6c490faf33f3c23b6130efa881f57c0c5235ced2877e2f45e3cdf4fefff11531d6023ae214"
+# The built-in containerd installer does not support Alpine currently.
+# Hint: use the "rd" ISO instead of the "std" ISO to enable containerd: https://github.com/lima-vm/alpine-lima/releases/
 
 # CPUs: if you see performance issues, try limiting cpus to 1.
 # 🟢 Builtin default: 4
@@ -44,6 +42,9 @@ disk: 10GiB
 # 🔵 This file: Mount the home as read-only, /tmp/lima as writable
 mounts:
 - location: "~"
+  # Configure the mountPoint inside the guest.
+  # 🟢 Builtin default: value of location
+  mountPoint: null
   # CAUTION: `writable` SHOULD be false for the home directory.
   # Setting `writable` to true is possible, but untested and dangerous.
   # 🟢 Builtin default: false
@@ -61,10 +62,43 @@ mounts:
     # system will look and feel like regular files directories in the Guest OS.
     # 🟢 Builtin default: false
     followSymlinks: null
+    # SFTP driver, "builtin" or "openssh-sftp-server". "openssh-sftp-server" is recommended.
+    # 🟢 Builtin default: "openssh-sftp-server" if OpenSSH SFTP Server binary is found, otherwise "builtin"
+    sftpDriver: null
+  9p:
+    # Supported security models are "passthrough", "mapped-xattr", "mapped-file" and "none".
+    # "mapped-xattr" and "mapped-file" are useful for persistent chown but incompatible with symlinks.
+    # 🟢 Builtin default: "none" (since Lima v0.13)
+    securityModel: null
+    # Select 9P protocol version. Valid options are: "9p2000" (legacy), "9p2000.u", "9p2000.L".
+    # 🟢 Builtin default: "9p2000.L"
+    protocolVersion: null
+    # The number of bytes to use for 9p packet payload, where 4KiB is the absolute minimum.
+    # 🟢 Builtin default: "128KiB"
+    msize: null
+    # Specifies a caching policy. Valid options are: "none", "loose", "fscache" and "mmap".
+    # Try choosing "mmap" or "none" if you see a stability issue with the default "fscache".
+    # See https://www.kernel.org/doc/Documentation/filesystems/9p.txt
+    # 🟢 Builtin default: "fscache" for non-writable mounts, "mmap" for writable mounts
+    cache: null
 - location: "/tmp/lima"
   # 🟢 Builtin default: false
   # 🔵 This file: true (only for "/tmp/lima")
   writable: true
+
+# Mount type for above mounts, such as "reverse-sshfs" (from sshocker), "9p" (EXPERIMENTAL, from QEMU’s virtio-9p-pci, aka virtfs),
+# or "virtiofs" (EXPERIMENTAL, needs `vmType: vz`)
+# 🟢 Builtin default: "reverse-sshfs"
+mountType: null
+
+# Lima disks to attach to the instance. The disks will be accessible from inside the
+# instance, labeled by name. (e.g. if the disk is named "data", it will be labeled
+# "lima-data" inside the instance). The disk will be mounted inside the instance at
+# `/mnt/lima-${VOLUME}`.
+# 🟢 Builtin default: null
+additionalDisks:
+# disks should be a list of disk name strings, for example:
+# - "data"
 
 ssh:
   # A localhost port of the host. Forwarded to port 22 of the guest.
@@ -81,7 +115,53 @@ ssh:
   # Forward ssh agent into the instance.
   # 🟢 Builtin default: false
   forwardAgent: null
+  # Forward X11 into the instance
+  # 🟢 Builtin default: false
+  forwardX11: null
+  # Trust forwarded X11 clients
+  # 🟢 Builtin default: false
+  forwardX11Trusted: null
 
+# ===================================================================== #
+# ADVANCED CONFIGURATION
+# ===================================================================== #
+
+caCerts:
+  # If set to `true`, this will remove all the default trusted CA certificates that
+  # are normally shipped with the OS.
+  # 🟢 Builtin default: false
+  removeDefaults: null
+
+  # A list of trusted CA certificate files. The files will be read and passed to cloud-init.
+  files:
+  # - examples/hello.crt
+
+  # A list of trusted CA certificates. These are directly passed to cloud-init.
+  certs:
+  # - |
+  #   -----BEGIN CERTIFICATE-----
+  #   YOUR-ORGS-TRUSTED-CA-CERT-HERE
+  #   -----END CERTIFICATE-----
+  # - |
+  #   -----BEGIN CERTIFICATE-----
+  #   YOUR-ORGS-TRUSTED-CA-CERT-HERE
+  #   -----END CERTIFICATE-----
+
+containerd:
+  # Enable system-wide (aka rootful)  containerd and its dependencies (BuildKit, Stargz Snapshotter)
+  # Note that `nerdctl.lima` only works in rootless mode; you have to use `lima sudo nerdctl ...`
+  # to use rootful containerd with nerdctl.
+  # 🟢 Builtin default: false
+  system: false
+  # Enable user-scoped (aka rootless) containerd and its dependencies
+  # 🟢 Builtin default: true
+  user: false
+#  # Override containerd archive
+#  # 🟢 Builtin default: hard-coded URL with hard-coded digest (see the output of `limactl info | jq .defaultTemplate.containerd.archives`)
+#  archives:
+#  - location: "~/Downloads/nerdctl-full-X.Y.Z-linux-amd64.tar.gz"
+#    arch: "x86_64"
+#    digest: "sha256:..."
 
 # Provisioning scripts need to be idempotent because they might be called
 # multiple times, e.g. when the host VM is being restarted.
@@ -92,20 +172,22 @@ provision:
   script: |
     #!/bin/bash
     set -eux -o pipefail
-    export DEBIAN_FRONTEND=noninteractive
-    # Install the apt-transport-https plugin
-    apt-get install apt-transport-https
-    # Add Tailscale’s package signing key and repository
-    curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/xenial.gpg | apt-key add -
-    curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/xenial.list | tee /etc/apt/sources.list.d/tailscale.list
-    # Install Tailscale
-    apt-get update
-    apt-get install tailscale
-    # just to make life easier
-    apt-get install make
+
+    # to prevent keys to be regenerated - https://github.com/lima-vm/lima/issues/678#issuecomment-1140812960
+    mkdir -p /etc/cloud/cloud.cfg.d
+    echo "ssh_deletekeys: false" > /etc/cloud/cloud.cfg.d/lima-local.cfg
+
+    apk update
+    apk add tailscale
+    /etc/init.d/tailscale start
     # Authenticate and connect your machine to your Tailscale network
     # Probably best to run this manually after start up as it require interactions
-    # tailscale up
+    # sudo tailscale up to login
+    #
+    # just to make life easier
+    apk add make
+    # in case mosh is used for connection instead of ssh
+    apk add mosh
 # # `user` is executed without the root privilege
 # - mode: user
 #   script: |
@@ -114,6 +196,12 @@ provision:
 #     cat <<EOF > ~/.vimrc
 #     set number
 #     EOF
+# # `boot` is executed directly by /bin/sh as part of cloud-init-local.service's early boot process,
+# # which is why there is no hash-bang specified in the example
+# # See cloud-init docs for more info https://cloudinit.readthedocs.io/en/latest/topics/examples.html#run-commands-on-first-boot
+# - mode: boot
+#   script: |
+#     systemctl disable NetworkManager-wait-online.service
 
 # Probe scripts to check readiness.
 # 🟢 Builtin default: null
@@ -145,25 +233,37 @@ cpuType:
   # 🟢 Builtin default: "qemu64" (or "host" when running on x86_64 host)
   x86_64: null
 
+rosetta:
+  # Enable Rosetta for Linux (EXPERIMENTAL).
+  # Hint: try `softwareupdate --install-rosetta` if Lima gets stuck at `Installing rosetta...`
+  # 🟢 Builtin default: false
+  enabled: null
+  # Register rosetta to /proc/sys/fs/binfmt_misc
+  # 🟢 Builtin default: false
+  binfmt: null
+
 firmware:
   # Use legacy BIOS instead of UEFI. Ignored for aarch64.
   # 🟢 Builtin default: false
   legacyBIOS: null
 
 video:
-  # QEMU display, e.g., "none", "cocoa", "sdl", "gtk".
+  # QEMU display, e.g., "none", "cocoa", "sdl", "gtk", "default".
+  # Choosing "none" will hide the video output, and not show any window.
+  # Choosing "default" will pick the first available of: gtk, sdl, cocoa.
   # As of QEMU v6.2, enabling this is known to have negative impact
   # on performance on macOS hosts: https://gitlab.com/qemu-project/qemu/-/issues/334
   # 🟢 Builtin default: "none"
   display: null
 
 # The instance can get routable IP addresses from the vmnet framework using
-# https://github.com/lima-vm/vde_vmnet.
+# https://github.com/lima-vm/socket_vmnet.
 # 🟢 Builtin default: null
 networks:
 # Lima can manage daemons for networks defined in $LIMA_HOME/_config/networks.yaml
-# automatically. Both vde_switch and vde_vmnet binaries must be installed into
+# automatically. The socket_vmnet binary must be installed into
 # secure locations only alterable by the "root" user.
+# The same applies to vde_switch and vde_vmnet for the deprecated VDE mode.
 # - lima: shared
 #   # MAC address of the instance; lima will pick one based on the instance name,
 #   # so DHCP assigned ip addresses should remain constant over instance restarts.
@@ -171,12 +271,20 @@ networks:
 #   # Interface name, defaults to "lima0", "lima1", etc.
 #   interface: ""
 #
-# Lima can also connect to "unmanaged" vde networks addressed by "vnl". This
+# Lima can also connect to "unmanaged" networks addressed by "socket". This
 # means that the daemons will not be controlled by Lima, but must be started
 # before the instance.  The interface type (host, shared, or bridged) is
-# configured in vde_vmnet and not in lima.
+# configured in socket_vmnet and not in lima.
+# - socket: "/var/run/socket_vmnet"
+
+
+# The "vzNAT" IP address is accessible from the host, but not from other guests.
+# Needs `vmType: vz` (EXPERIMENTAL).
+# - vzNAT: true
+
 # vnl (virtual network locator) points to the vde_switch socket directory,
 # optionally with vde:// prefix
+# ⚠️  vnl is deprecated, use socket.
 # - vnl: "vde:///var/run/vde.ctl"
 #   # VDE Switch port number (not TCP/UDP port number). Set to 65535 for PTP mode.
 #   # Builtin default: 0
@@ -218,8 +326,10 @@ networks:
 #
 # - guestSocket: "/run/user/{{.UID}}/my.sock"
 #   hostSocket: mysocket
+# # default: reverse: false
 # # "guestSocket" can include these template variables: {{.Home}}, {{.UID}}, and {{.User}}.
 # # "hostSocket" can include {{.Home}}, {{.Dir}}, {{.Name}}, {{.UID}}, and {{.User}}.
+# # "reverse" can only be used for unix sockets right now, not for tcp sockets.
 # # Put sockets into "{{.Dir}}/sock" to avoid collision with Lima internal sockets!
 # # Sockets can also be forwarded to ports and vice versa, but not to/from a range of ports.
 # # Forwarding requires the lima user to have rw access to the "guestsocket",
@@ -265,7 +375,7 @@ propagateProxyEnv: null
 # IPv6 configured as well.
 hostResolver:
   # 🟢 Builtin default: true
-  enabled: false
+  enabled: null
   # 🟢 Builtin default: false
   ipv6: null
   # Static names can be defined here as an alternative to adding them to the hosts /etc/hosts.
@@ -284,11 +394,9 @@ hostResolver:
 # setups), the servers can be specified here explicitly. If nameservers are specified
 # here, then the configuration from network preferences will be ignored.
 # 🟢 Builtin default: null
-dns:
-- 1.1.1.1
-- 1.0.0.1
-- 8.8.8.8
-- 8.8.4.4
+# dns:
+# - 1.1.1.1
+# - 1.0.0.1
 
 # ===================================================================== #
 # GLOBAL DEFAULTS AND OVERRIDES
