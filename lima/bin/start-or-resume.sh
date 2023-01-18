@@ -3,6 +3,8 @@
 set -e
 set -x
 
+command -v limactl || { echo 'limactl is required'; exit 1; }
+
 instance="${LIMA_INSTANCE}"
 
 extracted_name="$(limactl ls --json | jq -r ". | select(.name == \"${instance}\") | .name")"
