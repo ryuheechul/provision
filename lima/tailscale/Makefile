@@ -43,7 +43,7 @@ stop:
 # run this inside vm
 .PHONY: tailscale
 tailscale:
-	sudo tailscale up
+	sudo tailscale up --ssh
 
 # run this inside vm
 .PHONY: host

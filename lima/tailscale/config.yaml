@@ -178,16 +178,15 @@ provision:
     echo "ssh_deletekeys: false" > /etc/cloud/cloud.cfg.d/lima-local.cfg
 
     apk update
+    apk add htop # optional but handy to monitor
     apk add tailscale
     /etc/init.d/tailscale start
     # Authenticate and connect your machine to your Tailscale network
     # Probably best to run this manually after start up as it require interactions
     # `sudo tailscale up --ssh` to login
     #
-    # just to make life easier
-    apk add make
-    # in case mosh is used for connection instead of ssh
-    apk add mosh
+    apk add make # just to make life easier
+    apk add mosh # in case mosh is used for connection instead of ssh
 # # `user` is executed without the root privilege
 # - mode: user
 #   script: |

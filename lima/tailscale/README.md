@@ -53,10 +53,10 @@ Host *
   # optional but this allows you to keep using public/private keys
   # on local machine without having to move it to the jump host
   ForwardAgent yes
-  
+
   # optional and useful if adding keys are not done from a shell already
-  AddKeysToAgent yes 
-  
+  AddKeysToAgent yes
+
   # optional but you maybe want to reduce the payloads on the network
   Compression yes
 
@@ -79,4 +79,10 @@ Host remote-lima-guest
 > adding a public key of the remote machine to `~/.ssh/authorized_keys`, would let you avoid typing password of the account of the target machine
 
 ### Caveats
-resource spec at [./config.yaml](./config.yaml) is still probably an overkill and not terribly optimized yet.
+Resource spec at [./config.yaml](./config.yaml) is still probably an overkill and not terribly optimized yet.
+
+macOS host by default would turn into sleep mode when display is off unless a setting like below to be turned on.
+
+_Prevent automatic sleeping on power adapter when the display is off_
+
+[Go here](https://gist.github.com/ryuheechul/3918366306f6b7f02c250dcb0cbee4ec#prevent-ssh-disconnection) for more on that.
