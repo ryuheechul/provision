@@ -1,0 +1,9 @@
+# flake.lock is machine-specific, so it is deliberately not committed: it pins
+# the NAR hash of /etc/nixos/machine-configuration.baked, and that content only
+# ever changes with an image rebuild + recreate. A committed lock therefore
+# breaks the next machine's `make switch-flake` with "NAR hash mismatch" (cold
+# store) or silently serves the old content (warm store).
+# Each machine locks its own copy on first use; after an image change, refresh
+# a stale one with `nix flake update cm` in this directory, or delete it and
+# let the next switch recreate it.
+flake.lock

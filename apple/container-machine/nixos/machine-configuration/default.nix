@@ -33,8 +33,9 @@
 
   # configuration.nix is the only self-staged entry. It picks between the two
   # machine-configuration paths - the single place precedence is decided:
-  #   /etc/nixos/machine-configuration        live overlay: written only by
-  #     sync-config (make switch); present -> wins. rm -rf to remove it.
+  #   /etc/nixos/machine-configuration        live overlay: created by
+  #     sync-config (make switch), moved aside to machine-configuration.bak by
+  #     switch-nonflake-baked (restore-config moves it back); present -> wins.
   #   /etc/nixos/machine-configuration.baked  this tree as grafted into the
   #     image (image/bin/make-rootfs.sh); used while no overlay exists
   #     (fresh machine, or after the overlay is removed).
@@ -50,6 +51,13 @@
   # installBootLoader rewriting /sbin/init past the rootfs graft) fit an
   # LXC image, not Apple container-machine - access is `container machine
   # run`, root stays locked, and the runtime self-provisions the address.
+  # This directory doubles as a flake root (flake.nix), so both paths above are
+  # consumable by a flake-based configuration as `path:` inputs:
+  #   inputs.cm.url = "path:/etc/nixos/machine-configuration.baked";  image-frozen
+  #   inputs.cm.url = "path:/etc/nixos/machine-configuration";        live overlay
+  # It must be a real directory: Nix copies a symlinked path input as the link
+  # itself, and pure eval then refuses it - an environment.etc entry cannot
+  # serve as the flake.
   environment.etc."nixos/configuration.nix".text = ''
     { modulesPath, ... }:
     {

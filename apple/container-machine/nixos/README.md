@@ -46,7 +46,9 @@ What makes it work - each detailed further down:
   structure ships **baked into the image** (works out of the box for
   most users) and can be **overlaid imperatively** when you're
   actively developing it. Most users stay baked; the overlay is for
-  active tweaking. A flake-based version will be supported as well
+  active tweaking, and [`machine-configuration/flake.nix`](./machine-configuration/flake.nix)
+  serves flake-based configurations - the directory is its own flake root, so
+  the image copy and the live overlay are both consumable as `path:` inputs
   ([precedence](#configuration-precedence-two-paths-the-later-one-wins)).
 
 ## Basics
@@ -211,6 +213,56 @@ image itself needs to change.
 first switch the user is declarative (`users.users.<name>` via
 `user.nix`).
 
+### Example Configurations (for Testing switch)
+
+[`examples/`](./examples) holds two minimal configurations, so switching can be
+exercised without writing your own. The example files are read from the host
+mount, and each one switches against either base - the live overlay or the
+image's baked copy - one target per base:
+
+```sh
+make switch-nonflake         # examples/nonflake, base = live overlay
+make switch-nonflake-baked   # examples/nonflake, base = image copy (parks overlay in .bak)
+make restore-config          # brings the parked overlay back
+make switch-flake            # examples/flake, cm = image copy (.baked)
+make switch-flake-live       # examples/flake, cm = live overlay
+make switch                  # back to the machine's own machine-configuration overlay
+```
+
+- [`examples/nonflake/configuration.nix`](./examples/nonflake/configuration.nix)
+  is the shape a dotfiles configuration has (`imports = [
+  /etc/nixos/configuration.nix ]`) and switches through the channel +
+  `NIX_PATH`, exactly like `make switch`. It declares no base of its own:
+  `configuration.nix`'s precedence picks it, so `switch-nonflake` syncs the
+  overlay first (live wins) and `switch-nonflake-baked` parks it at
+  `machine-configuration.bak` instead of deleting it - precedence then falls
+  back to the image copy, and `make restore-config` brings the park back.
+- [`examples/flake/`](./examples/flake) is a flake configuration. A flake never
+  reads `/etc/nixos/configuration.nix`, so the same base comes from
+  [`machine-configuration/flake.nix`](./machine-configuration/flake.nix)'s
+  `nixosModules.default` instead: the example's `cm` input is
+  `path:/etc/nixos/machine-configuration.baked`, the copy the image grafts -
+  a real directory, so testing it needs no push and no network for `cm`.
+  Two alternatives sit beside it as commented lines, ready to uncomment: the
+  live overlay `path:/etc/nixos/machine-configuration` (tracks your edits,
+  written by [`make switch`](#host-side-workflow-this-directory)), and the URL
+  for consuming this flake from outside the machine,
+  `github:ryuheechul/provision?dir=apple/container-machine/nixos/machine-configuration`.
+  `switch-flake-live` takes the live path without editing anything - it passes
+  `--override-input cm path:/etc/nixos/machine-configuration`, which never
+  touches `flake.lock`. That lock is gitignored (see the comment in
+  [`examples/flake/.gitignore`](./examples/flake/.gitignore)): it pins the NAR
+  hash of the baked directory, and that content changes on every image
+  rebuild, so a committed lock would make `switch-flake` fail with
+  `NAR hash mismatch` on the next machine (or silently serve the old content
+  on a warm store). Each machine writes its own on first use; after an image
+  rebuild + recreate, refresh a stale lock with `nix flake update cm` in
+  `examples/flake`, or delete it and let the next switch recreate it.
+- Upstream gives flake-built systems a `NIX_PATH` without `nixos-config`, which
+  would break `make switch` after `make switch-flake`; this machine opts out of
+  that through `nixpkgs.flake.setNixPath` in
+  [`machine-configuration/nix.nix`](./machine-configuration/nix.nix).
+
 ## Boot Sequence
 
 First boot, and every login shell after it, run through this chain. The
@@ -310,7 +362,9 @@ preference:
 
 1. `/etc/nixos/machine-configuration` - the **live overlay**: a real
    directory written only by `sync-config` (hence by every `make switch`).
-   Present -> it wins. Remove it in the guest (`rm -rf`) to fall back.
+   Present -> it wins. `make switch-nonflake-baked` parks it at
+   `machine-configuration.bak` to fall back (`make restore-config` moves it
+   back); `rm -rf` in the guest removes it outright.
 2. `/etc/nixos/machine-configuration.baked` - the **baked** copy grafted
    into the image by [`image/bin/make-rootfs.sh`](./image/bin/make-rootfs.sh)
    from this same tree. Used on a fresh machine (before any sync) and after
@@ -327,6 +381,8 @@ never delete the live copy.
 - [`bin/build-on-container.sh`](./bin/build-on-container.sh) - build the image inside an Apple `container` sandbox running `nixos/nix` (no Lima VM, works from macOS). Two network entrances: `default` (normal) or `CONTAINER_BUILD_NETWORK=fresh` (when the default vmnet NAT has no outbound connectivity, e.g. a VPN/Tailscale default-route conflict). Mounts this dir into the guest, builds, and copies the real archive back; the guest `/nix/store` is ephemeral. Runs the sandbox with `--rm`, so a finished build leaves **no stopped container** behind and leaks no host disk. Passes `--memory 6G` because the NixOS tarball assembly OOMs at the default limit (tune with `CONTAINER_BUILD_MEMORY`).
 - [`bin/build-guard.sh`](./bin/build-guard.sh) - prompts before replacing an existing image archive; set `FORCE_BUILD=1` for non-interactive rebuilds.
 - [`bin/launch.sh`](./bin/launch.sh) - macOS side: `container image load --input build/nixos-machine-image.tar` + `container machine create` (name `nixos`), **create-if-missing**; `--recreate` asks before destroying. After creating, it waits up to 30s for the guest to reach `running` before printing shell-in hints; if the state is still unknown it says so and points at `make status` instead.
+- [`machine-configuration/flake.nix`](./machine-configuration/flake.nix) - the consumable flake: `nixosModules.default` carries the container profile + this module tree. The directory is its own flake root, so it is consumed from inside the machine as `path:/etc/nixos/machine-configuration.baked` (image copy; the live overlay is the alternative) - see [examples/flake](./examples/flake) - and from outside by URL.
+- [`examples/`](./examples) - the minimal non-flake and flake configurations switched with `make switch-nonflake` / `make switch-flake`.
 - [`Makefile`](./Makefile) - convenience entry point wrapping the scripts (`make build`, `make launch`, `make run`, `make recreate`, ...), run from this directory. Secondary packaging path: `make build-context` (Dockerfile fallback).
 
 The image is aarch64-linux, so macOS cannot build it natively.
