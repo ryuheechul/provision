@@ -1,0 +1,4 @@
+# Build output: the NixOS OCI archive (hundreds of MB) and the nix result
+# symlink, produced by the image builder in nixos/. Regenerate with
+# ./nixos/build.sh or ./nixos/build-on-container.sh; not committed.
+nixos/build/
