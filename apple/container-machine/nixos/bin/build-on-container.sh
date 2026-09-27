@@ -72,7 +72,12 @@ container run "${net[@]}" \
   sh -c '
     set -e
     cd /workspace
-    export NIX_PATH="nixpkgs=channel:nixpkgs"
+    # channel:nixos-26.05 (release branch): channel:nixpkgs was an ambiguous
+    # alias - its download failed here and fell back to a channel embedded
+    # in the builder image, so local and CI builds could disagree.
+    # See bin/build.sh. (No apostrophes on these lines: this whole script is
+    # one single-quoted sh -c string.)
+    export NIX_PATH="nixpkgs=channel:nixos-26.05"
     nix-build image -A image -o build/result --option sandbox false "$@"
     # build/result is a symlink into the ephemeral /nix/store; copy a real
     # archive into the bind-mounted project (artifact is 0444, drop any old one)

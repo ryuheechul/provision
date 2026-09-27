@@ -1,6 +1,6 @@
-# Apple `container` container-machine
+# Apple [Container machine](https://github.com/apple/container/blob/main/docs/container-machine.md)
 
-Provision [Apple `container`](https://github.com/apple/container) container-machines with NixOS - generic and dotfiles-agnostic.
+Provision [Apple `container`](https://github.com/apple/container) [Container machines](https://github.com/apple/container/blob/main/docs/container-machine.md) with NixOS - generic and dotfiles-agnostic.
 
 Each supported OS is a **flavor directory** under `apple/container-machine/`. The NixOS flavor is [`nixos/`](./nixos/), and its image build boots into a **switchable NixOS host**:
 

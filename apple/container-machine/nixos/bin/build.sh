@@ -6,7 +6,11 @@
 #   - your lima VM,
 #   - any aarch64 Linux box with nix (an ARM VM, CI runner, ...).
 #
-# NIX_PATH must point at a nixpkgs (defaults to channel:nixpkgs here).
+# NIX_PATH must point at a nixpkgs (defaults to channel:nixos-26.05 here -
+# the release branch the guest runtime channel also uses. Deliberately not
+# channel:nixpkgs: that alias resolved differently per machine - stale
+# fallback in the builder container, trunk on a host - so CI and local
+# builds could silently disagree).
 #
 # Usage: bin/build.sh [nix-build-extra-args...]
 set -euo pipefail
@@ -18,7 +22,7 @@ cd "$script_dir"
 
 ./build-guard.sh ../build/nixos-machine-image.tar
 
-export NIX_PATH="${NIX_PATH:-nixpkgs=channel:nixpkgs}"
+export NIX_PATH="${NIX_PATH:-nixpkgs=channel:nixos-26.05}"
 
 nix-build ../image -A image -o ../build/result "$@"
 

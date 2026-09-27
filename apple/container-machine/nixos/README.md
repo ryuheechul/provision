@@ -18,6 +18,35 @@ baked-in services give that user a working `PATH` and `sudo`. Your own
 configuration (dotfiles or otherwise) is switched in afterwards with an
 ordinary `nixos-rebuild switch`.
 
+---
+
+## Use the Prebuilt Image
+
+The fastest way to use this - no clone, no build: pull the published image
+and create the machine straight away. The only prerequisite is Apple's
+`container` CLI:
+
+```sh
+container machine create ghcr.io/ryuheechul/provision/nixos-cm:latest \
+  --name nixos --cpus 4 --memory 8G --home-mount rw
+container machine run -n nixos
+```
+
+The image lives in the GitHub Container Registry, published by the
+[workflow](../../../.github/workflows/nixos-container-machine-image.yml)
+(runs on demand from the Actions tab). Two tags are published: `latest` and
+`sha-<short>` (the commit the image was built from); the package page also
+shows a digest for exact pinning. The package is public, so pulling needs
+no registry login. Keep `--home-mount rw` only when you use this repo's
+Makefile targets (`sync-config`, `switch`) from a checkout against the
+machine - drop it otherwise.
+
+Everything below covers what the image is and how to build, launch, and
+switch it yourself - for when you want to change the image rather than
+just run it.
+
+---
+
 ## Key Ideas
 
 What makes it work - each detailed further down:
@@ -75,7 +104,7 @@ repo's situation.
 
 | Environment | Model | How Nix/NixOS arrives | Special provisions to make it work |
 | --- | --- | --- | --- |
-| Apple `container` machine (this repo) | VM: Virtualization.framework boots a runtime-supplied guest kernel, whose `vminitd` + `/sbin.machine/init` wrapper exec the image's `/sbin/init` - no bootloader and no kernel in the image | Baked OCI image with a switchable `/etc/nixos` | The image supplies what the runtime does not:<br>• boot grafts<br>&nbsp;&nbsp;◦ `/sbin/init`, `/run/current-system`, `/bin` shims<br>&nbsp;&nbsp;◦ pre-activation `/bin` shell bootstrap<br>• environment gaps<br>&nbsp;&nbsp;◦ gateway-based DNS (runtime starts no resolver)<br>&nbsp;&nbsp;◦ direct setuid sudo (`nosuid` `/run`)<br>• user reconciliation<br>&nbsp;&nbsp;◦ runtime-provisioned account, mutable passwd<br>(details: [Boot sequence](#boot-sequence), [Compat shims](#compat-shims)) |
+| Apple [Container machine](https://github.com/apple/container/blob/main/docs/container-machine.md) (this repo) | VM: Virtualization.framework boots a runtime-supplied guest kernel, whose `vminitd` + `/sbin.machine/init` wrapper exec the image's `/sbin/init` - no bootloader and no kernel in the image | Baked OCI image with a switchable `/etc/nixos` | The image supplies what the runtime does not:<br>• boot grafts<br>&nbsp;&nbsp;◦ `/sbin/init`, `/run/current-system`, `/bin` shims<br>&nbsp;&nbsp;◦ pre-activation `/bin` shell bootstrap<br>• environment gaps<br>&nbsp;&nbsp;◦ gateway-based DNS (runtime starts no resolver)<br>&nbsp;&nbsp;◦ direct setuid sudo (`nosuid` `/run`)<br>• user reconciliation<br>&nbsp;&nbsp;◦ runtime-provisioned account, mutable passwd<br>(details: [Boot sequence](#boot-sequence), [Compat shims](#compat-shims)) |
 | Regular NixOS VM (VMware, UTM, Parallels, ...) | Full VM: hypervisor boots kernel + bootloader | Official ISO, `nixos-install` | Nothing beyond `hardware-configuration.nix` - the baseline everything else is measured against |
 | Nix tools container (`nixos/nix` on Docker/Podman) | Process container: no init; the entrypoint is PID 1 | Nix preinstalled in the image | Nothing boot-related:<br>• no systemd, no activation, no NixOS host<br>&nbsp;&nbsp;◦ a toolbox, not a system container |
 | LXC | LXC: system container pioneer - uses a layered rootfs + config template to boot init; Apple's Container machine drops the layer/template abstraction and boots your `/sbin/init` straight from the OCI image. Most users encounter it via [Proxmox](https://proxmox.com) or [Incus](https://linuxcontainers.org/incus/). | NixOS rootfs template | • host setup<br>&nbsp;&nbsp;◦ template + AppArmor config<br>• user namespaces<br>&nbsp;&nbsp;◦ unprivileged runs need subuid/subgid id mappings |
@@ -190,6 +219,8 @@ working:
 
 ```sh
 # inside the guest (container machine run -n nixos)
+# the image is dotfiles-agnostic: any NixOS configuration works with it -
+# the clone below is just a real-world example that is known to work
 git clone https://github.com/ryuheechul/dotfiles ~/dotfiles  # or use the host mount
 ~/dotfiles/bootstrap/foundation/nixos/switch.sh   # gen-configuration + nixos-rebuild switch
 # or directly: sudo nixos-rebuild switch
@@ -207,7 +238,7 @@ These targets use the host home mount, so run them from this directory and keep
 the machine's `--home-mount rw` setting. Rebuild the image only when the boot
 image itself needs to change.
 
-`bootstrap/foundation/nixos/switch.sh` does `gen-configuration.sh`
+That example repo's `bootstrap/foundation/nixos/switch.sh` does `gen-configuration.sh`
 (`username=$(whoami)` + `user.nix {username}`) and `nixos-rebuild.sh`
 (`NIX_PATH` via `niv` + `nixos-rebuild switch` via `sudo`). After the
 first switch the user is declarative (`users.users.<name>` via
@@ -422,7 +453,7 @@ impact (home access works).
 
 ## Compat Shims
 
-A `container` Container machine is not an ordinary NixOS host; both the image
+A [Container machine](https://github.com/apple/container/blob/main/docs/container-machine.md) is not an ordinary NixOS host; both the image
 config and the persistent `/etc/nixos/configuration.nix` carry shims so the
 guest stays healthy (the latter survives `nixos-rebuild switch`):
 

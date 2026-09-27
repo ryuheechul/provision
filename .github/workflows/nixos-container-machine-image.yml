@@ -1,0 +1,39 @@
+# Build the Apple container-machine NixOS OCI image on an aarch64 Linux runner
+# and publish it to ghcr.io/ryuheechul/provision/nixos-cm, so consumers can
+# `container machine create` it without cloning or building (README: "Use the
+# Prebuilt Image"). Uses the same bin/build.sh as local Linux builds, the same
+# channel:nixos-26.05 pin, and the same bin/publish.sh as `make publish`, so
+# CI output and push behavior match local.
+name: nixos-container-machine-image
+
+on:
+  # dispatch-only: builds happen on demand (Actions tab), never on push, so
+  # image changes do not burn runner minutes until someone actually needs them
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # GITHUB_TOKEN pushes the package
+  packages: write
+
+jobs:
+  build-and-push:
+    # aarch64: the image is aarch64-linux and cannot be built on x86 runners
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - name: Build the OCI archive
+        env:
+          # non-interactive overwrite of any pre-existing archive
+          FORCE_BUILD: "1"
+          # explicit so CI cannot drift from bin/build.sh's default
+          NIX_PATH: nixpkgs=channel:nixos-26.05
+        run: apple/container-machine/nixos/bin/build.sh
+      - name: Push to ghcr.io
+        # with GHCR_TOKEN set, publish.sh uses these credentials directly and
+        # skips its gh scope check; the sha-<short> tag derives from HEAD
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: apple/container-machine/nixos/bin/publish.sh

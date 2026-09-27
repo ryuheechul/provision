@@ -6,6 +6,7 @@
 #
 #   make build         # build the OCI archive (Apple `container` sandbox)
 #   make build-context # alternate: Dockerfile context for container build (fallback)
+#   make publish       # push the built image to ghcr.io/ryuheechul/provision/nixos-cm
 #   make launch        # load the image + create the machine (create-if-missing)
 #   make run           # shell in as the machine user
 #   make root          # root shell
@@ -58,6 +59,14 @@ build-context: ## Materialize Dockerfile context (manual fallback; nix-build -A 
 	nix-build image -A buildContext -o build/build-context
 	@echo "Context dir: $$(readlink -f build/build-context)"
 	@echo "Usage: cp -L build/build-context /tmp/ctx && cd /tmp/ctx && container build -t $(IMAGE) ."
+
+# Push the built archive to GHCR so `container machine create` can pull it
+# without a local build (README: "Use the Prebuilt Image").
+# Auth: a stored `skopeo login ghcr.io` (classic PAT) or GHCR_USER/GHCR_TOKEN
+# env - details in bin/publish.sh.
+.PHONY: publish
+publish: ## Push build/ OCI archive to ghcr.io (latest + sha tag)
+	./bin/publish.sh
 
 # macOS side: load + create-if-missing; only --recreate / make delete destroy.
 .PHONY: launch
