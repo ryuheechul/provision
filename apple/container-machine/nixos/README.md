@@ -412,9 +412,10 @@ never delete the live copy.
 - [`bin/build-on-container.sh`](./bin/build-on-container.sh) - build the image inside an Apple `container` sandbox running `nixos/nix` (no Lima VM, works from macOS). Two network entrances: `default` (normal) or `CONTAINER_BUILD_NETWORK=fresh` (when the default vmnet NAT has no outbound connectivity, e.g. a VPN/Tailscale default-route conflict). Mounts this dir into the guest, builds, and copies the real archive back; the guest `/nix/store` is ephemeral. Runs the sandbox with `--rm`, so a finished build leaves **no stopped container** behind and leaks no host disk. Passes `--memory 6G` because the NixOS tarball assembly OOMs at the default limit (tune with `CONTAINER_BUILD_MEMORY`).
 - [`bin/build-guard.sh`](./bin/build-guard.sh) - prompts before replacing an existing image archive; set `FORCE_BUILD=1` for non-interactive rebuilds.
 - [`bin/launch.sh`](./bin/launch.sh) - macOS side: `container image load --input build/nixos-machine-image.tar` + `container machine create` (name `nixos`), **create-if-missing**; `--recreate` asks before destroying. After creating, it waits up to 30s for the guest to reach `running` before printing shell-in hints; if the state is still unknown it says so and points at `make status` instead.
+- [`bin/dns.sh`](./bin/dns.sh) - host-side DNS check: registered root domains plus every machine's `<name>.machine` -> IP match verdict (fixed suffix, no options - see [DNS (Host Side)](#dns-host-side)). Wrapped by `make dns`.
 - [`machine-configuration/flake.nix`](./machine-configuration/flake.nix) - the consumable flake: `nixosModules.default` carries the container profile + this module tree. The directory is its own flake root, so it is consumed from inside the machine as `path:/etc/nixos/machine-configuration.baked` (image copy; the live overlay is the alternative) - see [examples/flake](./examples/flake) - and from outside by URL.
 - [`examples/`](./examples) - the minimal non-flake and flake configurations switched with `make switch-nonflake` / `make switch-flake`.
-- [`Makefile`](./Makefile) - convenience entry point wrapping the scripts (`make build`, `make launch`, `make run`, `make recreate`, ...), run from this directory. Secondary packaging path: `make build-context` (Dockerfile fallback).
+- [`Makefile`](./Makefile) - convenience entry point wrapping the scripts (`make build`, `make launch`, `make run`, `make dns`, `make recreate`, ...), run from this directory. Secondary packaging path: `make build-context` (Dockerfile fallback).
 
 The image is aarch64-linux, so macOS cannot build it natively.
 
@@ -510,6 +511,79 @@ Observations (verified 2026-08):
   ```
 
   Only *free* blocks are reclaimed (delete first, then trim). Disk usage is otherwise monotonic until the machine is deleted.
+
+## DNS (Host Side)
+
+An optional host-side check - nothing here is required to build, create, or
+switch a machine; it only explains the naming you already have. The
+apple/container runtime on macOS owns it, the resolver wiring lives on the
+host, and the tools below (`container system dns list`, `bin/dns.sh`,
+`make dns`, `make dns-set`/`make dns-rm`) run there. The image contributes
+nothing - the guest only consumes the names (`resolvectl query
+nixos.machine`). How it fits together:
+
+- apple/container's containerization daemon serves DNS at `127.0.0.1:2053`.
+  `sudo container system dns create <domain>` registers a root domain with
+  macOS (it writes a file under `/etc/resolver/` so `*.<domain>` queries go to
+  that server); `container system dns list` shows what is registered - the
+  `machine` zone is one of them (the fixed one for machines).
+- A machine answers as `<name>.<domain>` - `nixos.machine` - from the host
+  (the resolver file also carries a search domain, so bare `nixos` works
+  there) and from inside the guest (`resolvectl query nixos.machine`; guest
+  queries travel through the vmnet gateway `192.168.64.1` to the same server).
+  Inside the guest its own hostname is `container-machine-<name>`
+  (`/etc/hosts` maps it to `127.0.0.2`); bare `<name>` does not resolve
+  there.
+- Only existing instances answer (`other.machine` does not). The name is the
+  stable handle: DHCP addresses change across restarts (observed `.41` ->
+  `.42`), so match instances by name, not by IP.
+
+```sh
+container system dns list      # registered root domains (host)
+make dns                       # per machine: <name>.machine -> IP -> MATCH
+make dns-set                   # (re)register the fixed machine domain (sudo)
+make dns-rm                    # unregister it again (sudo) - no arguments
+resolvectl query nixos.machine # the same name from inside the guest
+```
+
+The `.machine` suffix is hardcoded, not a default you can change:
+[`MachineConfiguration.swift`](https://github.com/apple/container/blob/main/Sources/Services/MachineAPIService/Client/MachineConfiguration.swift)
+defines `defaultDNSDomain = "machine"` and computes every machine's `dnsName`
+from it, and `container machine set` exposes no domain setting (only cpus,
+memory, home-mount, virtualization, kernel). Registering other domains with
+`sudo container system dns create <d>` (the mechanism behind
+`container system dns list` and the files under `/etc/resolver/`) targets
+*container* hostnames per apple's [networking
+docs](https://github.com/apple/container/blob/main/docs/networking.md#set-up-dns-based-container-names)
+- registering `ma-chine` the same way never resolved `nixos.ma-chine`, with or
+without `machine` registered. `bin/dns.sh` / `make dns` therefore take no
+options: `.machine` is the answer to query, and `make dns-set` / `make
+dns-rm` take no arguments either - they only add or remove that one fixed
+`machine` registration.
+
+### Debugging Host DNS
+
+A broken resolver file breaks DNS for the whole host, not just container
+names. Observed: a `container system dns delete` run left
+`/etc/resolver/containerization.` with empty `domain` and `search` lines -
+that matches every query, so macOS sent all lookups to `127.0.0.1:2053`, the
+embedded DNS answered only registered names, and external resolution died.
+
+Sequence when DNS looks wrong:
+
+- `scutil --dns` - the resolver stack actually in effect: every resolver with
+  its domain, search domains, nameservers, port and order. A catch-all file
+  shows up here with no `domain`.
+- `ls -la /etc/resolver/` plus `cat /etc/resolver/<file>` - what each file
+  declares; `domain` and `search` should name a real registration.
+- `container system dns list` - what the CLI considers registered.
+- `dscacheutil -q host -a name nixos.machine` - what a lookup returns.
+- `container machine list` failing with `XPC connection error` means the
+  apiserver died; `container system start` brings it back. `make dns` now
+  surfaces that error and this hint instead of failing silently.
+
+Recovery: `sudo rm` the broken file (e.g. `/etc/resolver/containerization.`)
+or re-register cleanly with `make dns-set`.
 
 ## Clean Up
 

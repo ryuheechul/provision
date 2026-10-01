@@ -11,6 +11,9 @@
 #   make run           # shell in as the machine user
 #   make root          # root shell
 #   make status        # key facts about the running config
+#   make dns           # machine DNS check: <name>.machine -> IP match
+#   make dns-set       # register the machine DNS domain (sudo)
+#   make dns-rm        # unregister the machine DNS domain (sudo)
 #   make switch        # apply machine-configuration/ to the running machine
 #   make fstrim        # reclaim host disk for blocks freed in the guest
 #   make clean         # remove build artifacts + loaded image + ALL stopped containers (prune is unfiltered; leaves the machine)
@@ -116,6 +119,25 @@ status: ## Show linked system + config source (overlay|baked) + count of failed 
 .PHONY: fstrim
 fstrim: ## Reclaim host disk for freed guest blocks
 	container machine run -n $(MACHINE_NAME) --root 'fstrim -v /'
+
+# DNS: bin/dns.sh matches every machine to the IP its <name>.machine resolves
+# to. The suffix is fixed by apple/container (defaultDNSDomain = "machine" in
+# MachineConfiguration.swift), so there is nothing to configure - README
+# "DNS (Host Side)" has the source link and the full picture. dns-set/dns-rm
+# register or unregister that one fixed `machine` domain (sudo; thin wrappers
+# over `container system dns create|delete`) - no argument, neither can change
+# the machine name suffix.
+.PHONY: dns
+dns: ## List DNS info + match each machine to its <name>.machine IP
+	./bin/dns.sh
+
+.PHONY: dns-set
+dns-set: ## Register the machine DNS domain (sudo)
+	sudo container system dns create machine
+
+.PHONY: dns-rm
+dns-rm: ## Unregister the machine DNS domain (sudo)
+	sudo container system dns delete machine
 
 # Transient artifacts only; LEAVE the machine intact. Machine removal is only
 # via the confirmation-gated `recreate` / `delete` targets above.
