@@ -28,8 +28,8 @@ and create the machine straight away. The only prerequisite is Apple's
 
 ```sh
 container machine create ghcr.io/ryuheechul/provision/nixos-cm:latest \
-  --name nixos --cpus 4 --memory 8G --home-mount rw
-container machine run -n nixos
+  --name nixos-cm --cpus 4 --memory 8G --home-mount rw
+container machine run -n nixos-cm
 ```
 
 The image lives in the GitHub Container Registry, published by the
@@ -159,13 +159,7 @@ OrbStack provides NixOS out of the box - select it from the [machine distros lis
 **f) Apple Container machine (this repo)**
 The runtime's `vminitd` reaches the image's `/sbin/init` - no bootloader, no kernel in the image, no cloud-init.
 
-Boot detail: the kernel's `init=` is `/sbin/vminitd`, which lives on a runtime-provided initfs disk (`/dev/vda`, ~640 MB, also holding `vmexec`), not in the image. It mounts the image rootfs (`/dev/vdb`), serves a gRPC API over vsock, and starts `vmexec`. `vmexec` then runs the runtime's own wrapper `/sbin.machine/init` - a read-only virtiofs mount from the host's `plugin-state/machine-apiserver/machines/<name>/sbin.machine`, not a file in the image. That wrapper sets the hostname, chowns the forwarded `ssh-auth.sock` to your macOS uid/gid, then `exec`s the image's `/sbin/init`. So **two** init stages sit outside the image before systemd takes over as PID 1:
-
-- proof - `/proc/1/environ` still carries the wrapper's exports (`CONTAINER_*`, `CONTAINER_SHELL`); `CONTAINER_SHELL` appears in no host binary and is set only by that script
-- provisioning - a second managed process runs right after the init chain, **before stage-2 activation**: the first boot's `/etc/sudoers.d/<user>` mtime lands inside its window, ahead of the `booting system configuration` line, so the account comes from `create-user.sh` (which appends the passwd/group/shadow lines and that sudoers rule) rather than from any image or activation step
-- the same script's marker, `/etc/.machine.initialized`, is a host-backed virtiofs file rather than image state, so it keeps its first-boot mtime across reboots
-
-One consequence: `/etc/hostname` is a NixOS symlink, so the wrapper's hostname write loses to activation - the machine ends up `container-machine-nixos`, not the `nixos` id the wrapper wrote.
+Two init stages sit outside the image before systemd takes over, along with the quirks that follow from them - all in [Boot Sequence](#boot-sequence).
 
 This repo bakes a NixOS OCI image with:
 - `/sbin/init` → systemd
@@ -194,7 +188,7 @@ sandbox, and `build.sh` works from any Linux box with nix.
 bin/build-on-container.sh    # build the OCI archive in an Apple `container` sandbox
 # or: bin/build.sh           # any Linux box with nix
 bin/launch.sh                # load the image + create the machine (create-if-missing)
-container machine run -n nixos   # shell in - as the macOS account (e.g. heechul)
+container machine run -n nixos-cm   # shell in - as the macOS account (e.g. heechul)
 ```
 
 The [Makefile](./Makefile) wraps those scripts as convenience targets
@@ -218,7 +212,7 @@ To apply your dotfiles - inside the guest as that user, with `sudo`
 working:
 
 ```sh
-# inside the guest (container machine run -n nixos)
+# inside the guest (container machine run -n nixos-cm)
 # the image is dotfiles-agnostic: any NixOS configuration works with it -
 # the clone below is just a real-world example that is known to work
 git clone https://github.com/ryuheechul/dotfiles ~/dotfiles  # or use the host mount
@@ -233,6 +227,18 @@ machine without building a new image:
 make sync-config       # write machine-configuration/ as the live overlay
 make switch            # sync it, then run nixos-rebuild switch
 ```
+
+A guest-side rebuild can give the machine a hostname that no longer matches the
+name you use for it from the host. `make check-machine-name` confirms exactly
+that: it reads `hostname` from inside the machine, compares it with
+`MACHINE_NAME`, and exits 1 on a mismatch. It is reporting only, because
+**renaming a container machine is currently not supported** - the CLI has no
+rename subcommand (`container machine set --name` selects a machine, it does not
+rename one), so the name is fixed at creation. Lining the two up would mean
+deleting and recreating the machine under the new name, which destroys its
+persisted `/home`. Either way nothing in this repo or the Nix code is touched,
+and [examples/](./examples) never has to follow: the example flake is selected
+by its fixed `#default` attr, never by the hostname.
 
 These targets use the host home mount, so run them from this directory and keep
 the machine's `--home-mount rw` setting. Rebuild the image only when the boot
@@ -268,27 +274,38 @@ make switch                  # back to the machine's own machine-configuration o
   overlay first (live wins) and `switch-nonflake-baked` parks it at
   `machine-configuration.bak` instead of deleting it - precedence then falls
   back to the image copy, and `make restore-config` brings the park back.
-- [`examples/flake/`](./examples/flake) is a flake configuration. A flake never
-  reads `/etc/nixos/configuration.nix`, so the same base comes from
-  [`machine-configuration/flake.nix`](./machine-configuration/flake.nix)'s
-  `nixosModules.default` instead: the example's `cm` input is
-  `path:/etc/nixos/machine-configuration.baked`, the copy the image grafts -
-  a real directory, so testing it needs no push and no network for `cm`.
-  Two alternatives sit beside it as commented lines, ready to uncomment: the
-  live overlay `path:/etc/nixos/machine-configuration` (tracks your edits,
-  written by [`make switch`](#host-side-workflow-this-directory)), and the URL
-  for consuming this flake from outside the machine,
-  `github:ryuheechul/provision?dir=apple/container-machine/nixos/machine-configuration`.
-  `switch-flake-live` takes the live path without editing anything - it passes
-  `--override-input cm path:/etc/nixos/machine-configuration`, which never
-  touches `flake.lock`. That lock is gitignored (see the comment in
-  [`examples/flake/.gitignore`](./examples/flake/.gitignore)): it pins the NAR
-  hash of the baked directory, and that content changes on every image
-  rebuild, so a committed lock would make `switch-flake` fail with
-  `NAR hash mismatch` on the next machine (or silently serve the old content
-  on a warm store). Each machine writes its own on first use; after an image
-  rebuild + recreate, refresh a stale lock with `nix flake update cm` in
-  `examples/flake`, or delete it and let the next switch recreate it.
+- [`examples/flake/`](./examples/flake) is a flake configuration:
+  - **where the base comes from** - a flake never reads
+    `/etc/nixos/configuration.nix`, so the same base comes from
+    [`machine-configuration/flake.nix`](./machine-configuration/flake.nix)'s
+    `nixosModules.default` instead. The example's `cm` input is
+    `path:/etc/nixos/machine-configuration.baked`, the copy the image grafts -
+    a real directory, so testing it needs no push and no network for `cm`.
+  - **other `cm` inputs** - two alternatives sit beside it as commented lines,
+    ready to uncomment:
+    - the live overlay `path:/etc/nixos/machine-configuration` (tracks your
+      edits, written by [`make switch`](#host-side-workflow-this-directory))
+    - the URL for consuming this flake from outside the machine,
+      `github:ryuheechul/provision?dir=apple/container-machine/nixos/machine-configuration`
+  - **`switch-flake-live`** takes the live path without editing anything - it
+    passes `--override-input cm path:/etc/nixos/machine-configuration`, which
+    never touches `flake.lock`
+  - **`flake.lock` is gitignored** (see the comment in
+    [`examples/flake/.gitignore`](./examples/flake/.gitignore)): it pins the NAR
+    hash of the baked directory, and that content changes on every image
+    rebuild, so a committed lock would make `switch-flake` fail with
+    `NAR hash mismatch` on the next machine (or silently serve the old content
+    on a warm store). Each machine writes its own on first use; after an image
+    rebuild + recreate, refresh a stale lock with `nix flake update cm` in
+    `examples/flake`, or delete it and let the next switch recreate it.
+  - **the `#default` attribute** - both flake targets pass it explicitly
+    (`--flake ...#default`), pointing at the stable `nixosConfigurations.default`,
+    so `nixos-rebuild` never has to infer the config from the guest's current
+    hostname - given no `#attr` it looks up `nixosConfigurations.$(hostname)`
+    instead, which is the one thing that would tie a rebuild to whatever the
+    machine happens to be called. The attr name sets nothing in the system: the
+    hostname comes from `networking.hostName` in the module, exactly as it would
+    outside a flake.
 - Upstream gives flake-built systems a `NIX_PATH` without `nixos-config`, which
   would break `make switch` after `make switch-flake`; this machine opts out of
   that through `nixpkgs.flake.setNixPath` in
@@ -298,7 +315,22 @@ make switch                  # back to the machine's own machine-configuration o
 
 First boot, and every login shell after it, run through this chain. The
 timing in the middle - the runtime starting shells before NixOS
-activation - is the quirk every other shim works around:
+activation - is the quirk every other shim works around.
+
+### Before the Image Runs
+
+Two init stages sit outside the image before systemd becomes PID 1:
+
+1. the kernel's `init=` is `/sbin/vminitd`, on a runtime-provided initfs disk
+   (`/dev/vda`, ~640 MB, also holding `vmexec`) - not in the image
+2. `vminitd` mounts the image rootfs (`/dev/vdb`), serves a gRPC API over vsock,
+   and starts `vmexec`
+3. `vmexec` runs the runtime's own `/sbin.machine/init` - a read-only virtiofs
+   mount from the host's `plugin-state/machine-apiserver/machines/<name>/sbin.machine`,
+   not a file in the image. It sets the hostname to the machine id, chowns the
+   forwarded `ssh-auth.sock` to your macOS uid/gid, then `exec`s the image's
+   `/sbin/init`
+4. systemd takes over as PID 1
 
 ```mermaid
 sequenceDiagram
@@ -323,6 +355,15 @@ sequenceDiagram
     act->>act: link /run/current-system, reinstall the bootstrap, shell-fix migrates passwd entries
     boot-->>shell: wrapper found, PATH prepended, login shell execs
 ```
+
+### What Follows From That
+
+- **proof** - `/proc/1/environ` still carries the wrapper's exports (`CONTAINER_*`, `CONTAINER_SHELL`); `CONTAINER_SHELL` appears in no host binary and is set only by that script
+- **provisioning** - a second managed process runs right after the init chain, **before stage-2 activation**: the first boot's `/etc/sudoers.d/<user>` mtime lands inside its window, ahead of the `booting system configuration` line, so the account comes from `create-user.sh` (which appends the passwd/group/shadow lines and that sudoers rule) rather than from any image or activation step
+- **marker** - the same script's marker, `/etc/.machine.initialized`, is a host-backed virtiofs file rather than image state, so it keeps its first-boot mtime across reboots
+- **hostname** - the wrapper's `echo ${CONTAINER_MACHINE_ID} > /etc/hostname` does succeed - the image ships no `/etc/hostname` - but stage-2 activation replaces that file with the symlink generated from `networking.hostName` before systemd reads it. So the hostname is entirely the config's: the machine comes up as `nixos-cm` because [`machine-configuration/default.nix`](./machine-configuration/default.nix) pins it to match the machine id
+
+### After Activation: The PATH Wrapper
 
 The PATH wrapper lives behind `/run/current-system`, which does not
 exist yet at exec time, so the bootstrap is grafted into the image at
@@ -411,8 +452,9 @@ never delete the live copy.
 - [`bin/build.sh`](./bin/build.sh) - `nix-build image -A image` (run on any Linux box with nix - lima VM, ARM Linux, CI). The `build/` output is a symlink into `/nix/store`, so it copies a real `build/nixos-machine-image.tar` next to it.
 - [`bin/build-on-container.sh`](./bin/build-on-container.sh) - build the image inside an Apple `container` sandbox running `nixos/nix` (no Lima VM, works from macOS). Two network entrances: `default` (normal) or `CONTAINER_BUILD_NETWORK=fresh` (when the default vmnet NAT has no outbound connectivity, e.g. a VPN/Tailscale default-route conflict). Mounts this dir into the guest, builds, and copies the real archive back; the guest `/nix/store` is ephemeral. Runs the sandbox with `--rm`, so a finished build leaves **no stopped container** behind and leaks no host disk. Passes `--memory 6G` because the NixOS tarball assembly OOMs at the default limit (tune with `CONTAINER_BUILD_MEMORY`).
 - [`bin/build-guard.sh`](./bin/build-guard.sh) - prompts before replacing an existing image archive; set `FORCE_BUILD=1` for non-interactive rebuilds.
-- [`bin/launch.sh`](./bin/launch.sh) - macOS side: `container image load --input build/nixos-machine-image.tar` + `container machine create` (name `nixos`), **create-if-missing**; `--recreate` asks before destroying. After creating, it waits up to 30s for the guest to reach `running` before printing shell-in hints; if the state is still unknown it says so and points at `make status` instead.
+- [`bin/launch.sh`](./bin/launch.sh) - macOS side: `container image load --input build/nixos-machine-image.tar` + `container machine create` (name `nixos-cm`), **create-if-missing**; `--recreate` asks before destroying. After creating, it waits up to 30s for the guest to reach `running` before printing shell-in hints; if the state is still unknown it says so and points at `make status` instead.
 - [`bin/dns.sh`](./bin/dns.sh) - host-side DNS check: registered root domains plus every machine's `<name>.machine` -> IP match verdict (fixed suffix, no options - see [DNS (Host Side)](#dns-host-side)). Wrapped by `make dns`.
+- [`bin/check-machine-name.sh`](./bin/check-machine-name.sh) - confirms that `MACHINE_NAME` and the guest's `hostname` still agree, exiting 1 on a mismatch. Reporting only: renaming a container machine is currently not supported (no rename subcommand, and `set --name` selects rather than renames), so there is nothing it could change - it edits neither this repo nor the Nix code. Wrapped by `make check-machine-name`.
 - [`machine-configuration/flake.nix`](./machine-configuration/flake.nix) - the consumable flake: `nixosModules.default` carries the container profile + this module tree. The directory is its own flake root, so it is consumed from inside the machine as `path:/etc/nixos/machine-configuration.baked` (image copy; the live overlay is the alternative) - see [examples/flake](./examples/flake) - and from outside by URL.
 - [`examples/`](./examples) - the minimal non-flake and flake configurations switched with `make switch-nonflake` / `make switch-flake`.
 - [`Makefile`](./Makefile) - convenience entry point wrapping the scripts (`make build`, `make launch`, `make run`, `make dns`, `make recreate`, ...), run from this directory. Secondary packaging path: `make build-context` (Dockerfile fallback).
@@ -507,7 +549,7 @@ Observations (verified 2026-08):
 - `fstrim` **does** reclaim host disk for freed blocks (guest TRIM propagates to a host hole-punch):
 
   ```sh
-  container machine run -n nixos --root 'fstrim -v /'
+  container machine run -n nixos-cm --root 'fstrim -v /'
   ```
 
   Only *free* blocks are reclaimed (delete first, then trim). Disk usage is otherwise monotonic until the machine is deleted.
@@ -520,20 +562,20 @@ apple/container runtime on macOS owns it, the resolver wiring lives on the
 host, and the tools below (`container system dns list`, `bin/dns.sh`,
 `make dns`, `make dns-set`/`make dns-rm`) run there. The image contributes
 nothing - the guest only consumes the names (`resolvectl query
-nixos.machine`). How it fits together:
+nixos-cm.machine`). How it fits together:
 
 - apple/container's containerization daemon serves DNS at `127.0.0.1:2053`.
   `sudo container system dns create <domain>` registers a root domain with
   macOS (it writes a file under `/etc/resolver/` so `*.<domain>` queries go to
   that server); `container system dns list` shows what is registered - the
   `machine` zone is one of them (the fixed one for machines).
-- A machine answers as `<name>.<domain>` - `nixos.machine` - from the host
-  (the resolver file also carries a search domain, so bare `nixos` works
-  there) and from inside the guest (`resolvectl query nixos.machine`; guest
+- A machine answers as `<name>.<domain>` - `nixos-cm.machine` - from the host
+  (the resolver file also carries a search domain, so bare `nixos-cm` works
+  there) and from inside the guest (`resolvectl query nixos-cm.machine`; guest
   queries travel through the vmnet gateway `192.168.64.1` to the same server).
-  Inside the guest its own hostname is `container-machine-<name>`
-  (`/etc/hosts` maps it to `127.0.0.2`); bare `<name>` does not resolve
-  there.
+  Inside the guest its own hostname comes from `networking.hostName`, which
+  this repo sets to the machine name; `/etc/hosts` maps that name to
+  `127.0.0.2`, so bare `<name>` resolves there too.
 - Only existing instances answer (`other.machine` does not). The name is the
   stable handle: DHCP addresses change across restarts (observed `.41` ->
   `.42`), so match instances by name, not by IP.
@@ -543,7 +585,7 @@ container system dns list      # registered root domains (host)
 make dns                       # per machine: <name>.machine -> IP -> MATCH
 make dns-set                   # (re)register the fixed machine domain (sudo)
 make dns-rm                    # unregister it again (sudo) - no arguments
-resolvectl query nixos.machine # the same name from inside the guest
+resolvectl query nixos-cm.machine # the same name from inside the guest
 ```
 
 The `.machine` suffix is hardcoded, not a default you can change:
@@ -577,7 +619,7 @@ Sequence when DNS looks wrong:
 - `ls -la /etc/resolver/` plus `cat /etc/resolver/<file>` - what each file
   declares; `domain` and `search` should name a real registration.
 - `container system dns list` - what the CLI considers registered.
-- `dscacheutil -q host -a name nixos.machine` - what a lookup returns.
+- `dscacheutil -q host -a name nixos-cm.machine` - what a lookup returns.
 - `container machine list` failing with `XPC connection error` means the
   apiserver died; `container system start` brings it back. `make dns` now
   surfaces that error and this hint instead of failing silently.

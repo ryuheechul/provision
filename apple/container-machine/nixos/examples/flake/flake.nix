@@ -19,7 +19,12 @@
   };
 
   outputs = { self, nixpkgs, cm }: {
-    nixosConfigurations.container-machine-nixos = nixpkgs.lib.nixosSystem {
+    # The stable entry point: make switch-flake always passes #default, so the
+    # rebuild never depends on the guest's current hostname. nixos-rebuild does
+    # not single this one out on its own - with no #attr it looks up
+    # nixosConfigurations.$(hostname) instead, which is why the Makefile never
+    # omits the attr.
+    nixosConfigurations.default = nixpkgs.lib.nixosSystem {
       system = "aarch64-linux";
       modules = [
         cm.nixosModules.default

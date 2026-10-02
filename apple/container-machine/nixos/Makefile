@@ -34,7 +34,7 @@
 
 # Machine name (single canonical name, also used by launch.sh). Set it on the
 # make command line (`make run MACHINE_NAME=foo`) or as an env var.
-MACHINE_NAME ?= nixos
+MACHINE_NAME ?= nixos-cm
 # Image tag (single host-side default; passed through to launch.sh). Matches
 # image/default.nix imageName:imageTag. Override: `make launch IMAGE=other:tag`.
 IMAGE        ?= local/nixos-cm:latest
@@ -114,6 +114,13 @@ status: ## Show linked system + config source (overlay|baked) + count of failed 
 		echo "config source: $$(if [ -e /etc/nixos/machine-configuration ]; then echo overlay; else echo baked; fi)"; \
 		echo "failed units: $$(systemctl list-units --state=failed --no-legend | wc -l)"; \
 	'
+
+# Confirm this repo's machine name and the guest's hostname still agree.
+# Reporting only: apple/container cannot rename a machine, and this edits
+# neither this repo nor the Nix code. See bin/check-machine-name.sh.
+.PHONY: check-machine-name
+check-machine-name: ## Confirm the machine name and the guest's hostname agree
+	MACHINE_NAME="$(MACHINE_NAME)" ./bin/check-machine-name.sh
 
 # Only reclaims *free* blocks - delete first, then trim. Not destructive alone.
 .PHONY: fstrim
@@ -245,11 +252,11 @@ switch-flake: sync-config ## [test] examples/flake, cm = image copy (.baked)
 	@test -f "$(HOST_EXAMPLES)/flake/flake.nix" || \
 		{ echo "missing $(HOST_EXAMPLES)/flake/flake.nix" >&2; exit 2; }
 	container machine run -n $(MACHINE_NAME) --root \
-		'. /etc/set-environment && nixos-rebuild switch --flake "$(HOST_EXAMPLES)/flake"'
+		'. /etc/set-environment && nixos-rebuild switch --flake "$(HOST_EXAMPLES)/flake#default"'
 
 .PHONY: switch-flake-live
 switch-flake-live: sync-config ## [test] examples/flake, cm = live overlay (override-input)
 	@test -f "$(HOST_EXAMPLES)/flake/flake.nix" || \
 		{ echo "missing $(HOST_EXAMPLES)/flake/flake.nix" >&2; exit 2; }
 	container machine run -n $(MACHINE_NAME) --root \
-		'. /etc/set-environment && nixos-rebuild switch --flake "$(HOST_EXAMPLES)/flake" --override-input cm path:/etc/nixos/machine-configuration'
+		'. /etc/set-environment && nixos-rebuild switch --flake "$(HOST_EXAMPLES)/flake#default" --override-input cm path:/etc/nixos/machine-configuration'

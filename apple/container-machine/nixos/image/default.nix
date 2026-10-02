@@ -15,7 +15,7 @@
 #
 #   nix-build image -A image -o build/result      # on a Linux builder
 #   container image load --input "$(realpath build/result)"   # on macOS
-#   container machine create local/nixos-cm:latest --name nixos
+#   container machine create local/nixos-cm:latest --name nixos-cm
 #
 # Layout of this directory (everything that defines the image):
 #   - common.nix  - shared platform facts, static file contents, OCI JSON

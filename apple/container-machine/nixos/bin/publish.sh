@@ -82,4 +82,4 @@ done
 echo
 echo "published:$pushed"
 echo "pull (anonymous, once the package is public):"
-echo "  container machine create $image:latest --name nixos --cpus 4 --memory 8G --home-mount rw"
+echo "  container machine create $image:latest --name nixos-cm --cpus 4 --memory 8G --home-mount rw"

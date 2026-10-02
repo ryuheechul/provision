@@ -16,7 +16,7 @@
 # Runs from any working directory; the default archive is this project's own
 # build/. An explicit relative path is resolved against your cwd.
 #
-# Env:  MACHINE_NAME (default "nixos")
+# Env:  MACHINE_NAME (default "nixos-cm")
 #       IMAGE (default "local/nixos-cm:latest"; matches image/default.nix)
 set -euo pipefail
 
@@ -35,7 +35,7 @@ for arg in "$@"; do
     *) archive="$arg" ;;
   esac
 done
-name="${MACHINE_NAME:-nixos}"
+name="${MACHINE_NAME:-nixos-cm}"
 image="${IMAGE:-local/nixos-cm:latest}"
 
 # no argument -> this project's build/; a relative argument -> the caller's cwd
@@ -56,10 +56,10 @@ fi
 
 container image load --input "$archive"
 
-if container machine list 2>/dev/null | grep -q "^$name[[:space:]]"; then
+if container machine list 2>/dev/null | grep -q "^${name}[[:space:]]"; then
   if [ "$recreate" -eq 1 ]; then
     # confirmation gate: the machine holds persisted state that will be lost
-    read -p "Delete existing machine '$name'? This erases its persisted state (e.g. /home). Type yes to confirm: " ans
+    read -r -p "Delete existing machine '$name'? This erases its persisted state (e.g. /home). Type yes to confirm: " ans
     if [ "$ans" = "yes" ]; then
       container machine delete "$name"
       echo "machine '$name' deleted"

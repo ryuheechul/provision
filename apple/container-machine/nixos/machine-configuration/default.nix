@@ -19,7 +19,7 @@
   ];
 
   system.stateVersion = lib.mkDefault "26.05";
-  networking.hostName = lib.mkDefault "container-machine-nixos";
+  networking.hostName = lib.mkDefault "nixos-cm";
 
   # Explicit pins so the image keeps these tools even if the container
   # profile drops them from the default set.
