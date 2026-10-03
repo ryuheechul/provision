@@ -17,6 +17,10 @@
 #   make dns-rm        # unregister the machine DNS domain (sudo)
 #   make switch        # apply machine-configuration/ to the running machine
 #   make fstrim        # reclaim host disk for blocks freed in the guest
+#   make kvm-kernel    # build the pinned KVM-capable kernel (cached in XDG cache)
+#   make enable-kvm    # apply kernel + virtualization=true (restarts; state kept)
+#   make disable-kvm   # undo: default kernel + virtualization=false (restarts)
+#   make kvm-verify    # in-guest check: kernel, EL2, /dev/kvm, CONFIG_KVM
 #   make clean         # remove build artifacts + loaded image + ALL stopped containers (prune is unfiltered; leaves the machine)
 #   make recreate      # DELETE the machine + re-create it (DESTROYS state; confirms)
 #   make delete        # DELETE the machine + its state, no recreate (DESTROYS; confirms)
@@ -44,6 +48,23 @@ HOST_BASE    := $(CURDIR)/machine-configuration
 # Example configurations (switch-nonflake / switch-flake). Host paths, read in
 # the guest via the machine's --home-mount rw.
 HOST_EXAMPLES := $(CURDIR)/examples
+
+# Nested virtualization (KVM): a KVM-capable kernel built from apple/
+# containerization at a pinned ref, parked in the XDG cache under this repo
+# own namespace (provision-cm, not the runtime own "container-machine" -
+# machine kernel= points here). The filename carries kernel version + ref
+# short so a ref bump misses the cache and rebuilds. KVM_KSRC matches
+# kernel/Makefile's default KSOURCE; kernel/Makefile curls source.tar.xz
+# (161M) on first build.
+# KVM_DEFAULT_KERNEL is the CLI's own default-kernel symlink - the undo handle
+# for enable-kvm, because `kernel=` (empty) is documented to reset but the
+# parser rejects empty values.
+KVM_REF            ?= 8be8e841e76960403ac2b126c737a7ac25bf090a
+KVM_KSRC           ?= https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.5.tar.xz
+KVM_CACHE          ?= $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/provision-cm
+KVM_SRC            := $(KVM_CACHE)/containerization
+KVM_KERNEL         := $(KVM_CACHE)/kernels/vmlinux-arm64-6.18.5-cz-$(shell printf '%.12s' $(KVM_REF))
+KVM_DEFAULT_KERNEL ?= $(HOME)/Library/Application Support/com.apple.container/kernels/default.kernel-arm64
 
 .PHONY: help
 help: ## Show all targets
@@ -147,6 +168,65 @@ check-machine-name: wait-ready ## Confirm the machine name and the guest's hostn
 .PHONY: fstrim
 fstrim: wait-ready ## Reclaim host disk for freed guest blocks
 	container machine run -n $(MACHINE_NAME) --root 'fstrim -v /'
+
+# Nested virtualization (KVM). One-time setup: build the kernel (kvm-kernel),
+# point the machine at it (enable-kvm; restarts, state kept), then check
+# inside the guest (kvm-verify). Needs Apple Silicon M3+ / macOS 15+: the CLI
+# only passes /dev/kvm through when the machine boots with a CONFIG_KVM=y
+# kernel AND virtualization=true. The kernel build compiles in an Apple
+# `container` sandbox (kernel/Makefile: image + build.sh). Both settings live
+# in the machine-level config: they survive stop/start but NOT recreate or
+# delete (the machine comes back on the default kata kernel, no virtualization).
+.PHONY: kvm-kernel
+kvm-kernel: ## Build the pinned KVM-capable kernel into the cache (no-op if built)
+	@mkdir -p "$(KVM_CACHE)/kernels"
+	@if [ -f "$(KVM_KERNEL)" ]; then \
+		echo "already built: $(KVM_KERNEL)"; \
+	else \
+		echo "building KVM kernel (Apple container sandbox; first build also fetches source.tar.xz)"; \
+		{ [ -d "$(KVM_SRC)/.git" ] || git clone https://github.com/apple/containerization "$(KVM_SRC)"; } && \
+		git -C "$(KVM_SRC)" checkout -q "$(KVM_REF)" && \
+		$(MAKE) -C "$(KVM_SRC)/kernel" KSOURCE="$(KVM_KSRC)" && \
+		cp "$(KVM_SRC)/kernel/vmlinux-arm64" "$(KVM_KERNEL)" && \
+		echo "built: $(KVM_KERNEL)"; \
+	fi
+
+# Apply it to the machine: stop, set kernel + virtualization, boot again.
+# `set` takes effect at the next boot; wait-ready boots a stopped machine and
+# absorbs the stage-2 window. State persists across the restart.
+.PHONY: enable-kvm
+enable-kvm: kvm-kernel ## Stop, apply kernel= + virtualization=true, boot (state persists)
+	container machine stop $(MACHINE_NAME) 2>/dev/null || true
+	container machine set -n $(MACHINE_NAME) kernel="$(KVM_KERNEL)" virtualization=true
+	@$(MAKE) wait-ready
+	@echo "kvm enabled on '$(MACHINE_NAME)'; now: make kvm-verify"
+
+# Undo handle for enable-kvm: back on the CLI's default kernel with
+# virtualization off (same restart semantics; state persists). The reset goes
+# through the default-kernel symlink since `kernel=` (empty) is rejected.
+.PHONY: disable-kvm
+disable-kvm: ## Restore the default kernel + virtualization=false (restarts)
+	container machine stop $(MACHINE_NAME) 2>/dev/null || true
+	container machine set -n $(MACHINE_NAME) kernel="$(KVM_DEFAULT_KERNEL)" virtualization=false
+	@$(MAKE) wait-ready
+	@echo "kvm disabled on '$(MACHINE_NAME)' (default kernel restored)"
+
+# In-guest proof: custom kernel, EL2 entry, /dev/kvm (with udev mode), and
+# CONFIG_KVM=y. Non-zero exit when /dev/kvm or the config flag is missing -
+# exactly the two things a default-kernel machine lacks.
+.PHONY: kvm-verify
+kvm-verify: wait-ready ## Verify nested KVM in the guest (kernel, EL2, /dev/kvm, config)
+	container machine run -n $(MACHINE_NAME) --root '\
+		echo "kernel: $$(uname -r)"; \
+		dmesg | grep -q "started at EL2" && echo "EL2: yes" || echo "EL2: not in dmesg ring (was seen at boot)"; \
+		if [ -c /dev/kvm ]; then echo "/dev/kvm: $$(ls -l /dev/kvm)"; else echo "/dev/kvm: MISSING"; exit 1; fi; \
+		if [ -r /proc/config.gz ]; then \
+			zcat /proc/config.gz | grep -q "^CONFIG_KVM=y" && echo "CONFIG_KVM=y" || { echo "CONFIG_KVM not set"; exit 1; }; \
+		else \
+			echo "/proc/config.gz unreadable - skipping config check"; \
+		fi \
+	'
+
 
 # DNS: bin/dns.sh matches every machine to the IP its <name>.machine resolves
 # to. The suffix is fixed by apple/container (defaultDNSDomain = "machine" in

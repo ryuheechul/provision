@@ -79,6 +79,12 @@ What makes it work - each detailed further down:
   serves flake-based configurations - the directory is its own flake root, so
   the image copy and the live overlay are both consumable as `path:` inputs
   ([precedence](#configuration-precedence-two-paths-the-later-one-wins)).
+- **The kernel is runtime-supplied - so it can be swapped** - the image
+  ships no kernel; `container machine set` points the machine at a
+  custom one, which is how a `CONFIG_KVM=y` build plus
+  `virtualization=true` hands the guest `/dev/kvm` for nested
+  virtualization
+  ([Nested Virtualization (KVM)](#nested-virtualization-kvm)).
 
 ## Basics
 
@@ -627,6 +633,94 @@ Sequence when DNS looks wrong:
 
 Recovery: `sudo rm` the broken file (e.g. `/etc/resolver/containerization.`)
 or re-register cleanly with `make dns-set`.
+
+## Nested Virtualization (KVM)
+
+An optional feature like [DNS](#dns-host-side) - skip it entirely if you do
+not want VMs-inside-the-machine; nothing else in this repo needs it. The
+image ships no kernel (see [Key Ideas](#key-ideas)), so the machine's kernel
+is a runtime setting - and `container machine set` can point it at a
+KVM-capable one (upstream mechanism: [Nested virtualization and custom
+kernels](https://github.com/apple/container/blob/main/docs/container-machine.md#nested-virtualization-and-custom-kernels)
+in the Container machine docs):
+
+```bash
+make kvm-kernel    # build the pinned KVM kernel into the XDG cache (no-op once built)
+make enable-kvm    # stop; set kernel=... + virtualization=true; boot again
+make kvm-verify    # in-guest proof: custom kernel, EL2, /dev/kvm, CONFIG_KVM=y
+make disable-kvm   # undo: default kernel again + virtualization=false (restarts)
+```
+
+**Requirements**
+
+- Apple Silicon M3 or newer, macOS 15+
+- a kernel with `CONFIG_KVM=y`: the CLI passes the host's `/dev/kvm` into
+  the machine only when it boots with both `virtualization=true` and such
+  a kernel
+- the default kata kernel (`vmlinux-6.12.28-153`) does not enable KVM,
+  hence the swap
+
+**Which kernel** - `kvm-kernel` builds [apple/containerization](https://github.com/apple/containerization)'s
+in-repo integration kernel (ref pinned as `KVM_REF` in the Makefile):
+
+- why this one: `kernel/config-arm64` sets `CONFIG_KVM=y` because
+  containerization needs exactly this to nest its own Linux VMs
+- how it builds: `kernel/Makefile` compiles Linux 6.18.5
+  (`LOCALVERSION=-cz-<ref12>`) inside an Apple `container` sandbox, so the
+  whole build works from macOS; a first build needs network (the Linux
+  source tarball is fetched once by `kernel/Makefile`)
+- where it lands: `$XDG_CACHE_HOME/provision-cm/kernels/vmlinux-arm64-6.18.5-cz-<ref12>`
+  (default `~/.cache/...`; this repo's own namespace, not the runtime's)
+- cache semantics: the ref is part of the filename, so bumping `KVM_REF`
+  misses the cache and rebuilds
+
+**Trade-offs vs the default kernel** - the swap is not free; the config is
+shaped for containerization's own integration needs:
+
+- no loadable modules at all, everything builtin: the bare `Image` is all
+  that gets installed, so nothing can be missing on the guest side - but
+  nothing can be added either
+- gives up compared to the default kata kernel:
+  - `iptables-legacy` (nftables-only; docker, podman and tailscale all
+    use that path)
+  - the whole LSM stack: seccomp, bpf and user namespaces are on;
+    landlock/apparmor/selinux are not
+  - multicast (no mDNS inside the machine)
+  - 9p mounts inside the machine
+  - XFS and EROFS
+  - kernel-side ARM crypto extensions: only kernel crypto falls back to
+    software, userspace ssh/TLS is unaffected
+  - BBR (cubic default) and the container tuning (`NO_HZ_FULL`,
+    `RCU_NOCB`)
+- gains over the default:
+  - ext4, vfat, fuse, overlay, nfs, cifs, squashfs - several of which
+    the default lacks
+  - nftables, TUN/MACVLAN/IPVLAN, wireguard, THP
+- maintenance:
+  - pinned snapshot: bump `KVM_REF` / `KVM_KSRC` to pick up kernel
+    updates (the default kernel updates with the CLI instead)
+  - 6.18 is not an LTS series (the default is 6.12 LTS)
+
+**Persistence and undo**
+
+- both settings are machine-level (stored by `container` beside
+  cpus/memory): they survive `stop`/`start` and image reloads, and
+  nothing in this repo's config or in the guest's NixOS configuration
+  records them
+- everyday undo: `make disable-kvm` points the machine back at the CLI's
+  own default-kernel symlink (`kernels/default.kernel-arm64`) and sets
+  `virtualization=false`
+  - the documented empty `kernel=` reset is rejected by the CLI's
+    argument parser, so the symlink is the stable handle
+  - while disabled, `make kvm-verify` exits non-zero by design
+- `make recreate` / `make delete` reset to the default kernel too - re-run
+  `make enable-kvm` afterwards if you want it back
+
+**What it buys** - guests-of-guests on real hardware virtualization:
+
+- a QEMU with `-accel kvm:tcg`, e.g. a [microvm.nix](https://github.com/astro/microvm.nix)
+  microvm, cloud-hypervisor, or lima
+- verified up to a NixOS microvm booting on `/dev/kvm` inside the machine
 
 ## Clean Up
 
