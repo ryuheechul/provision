@@ -10,6 +10,7 @@
 #   make launch        # load the image + create the machine (create-if-missing)
 #   make run           # shell in as the machine user
 #   make root          # root shell
+#   make wait-ready    # boot (if needed) + wait until exec works (stage-2 linked)
 #   make status        # key facts about the running config
 #   make dns           # machine DNS check: <name>.machine -> IP match
 #   make dns-set       # register the machine DNS domain (sudo)
@@ -94,21 +95,41 @@ delete: ## Delete the machine + its persisted state (DESTROYS; confirms)
 		echo "Aborted."; \
 	fi
 
+# Apple's init execs the passwd shell the instant the CLI connects - before
+# stage-2 activation links /run/current-system - so a run in that window dies
+# with a transient ENOENT on the shell path (see machine-configuration/shell.nix,
+# which closes it only for bootstrap shells). Every target that execs into the
+# machine waits here first: boots a stopped machine, then polls `run true`
+# until stage-2 is done (costs one fast probe when already warm).
+.PHONY: wait-ready
+wait-ready: ## Boot (if needed) + wait until the machine accepts exec
+	@container machine list 2>/dev/null | grep -qE '^$(MACHINE_NAME)([ \t]|$$)' || \
+		{ echo "error: machine '$(MACHINE_NAME)' not found (make launch first)" >&2; exit 1; }
+	@i=0; \
+	while ! container machine run -n $(MACHINE_NAME) true >/dev/null 2>&1; do \
+		i=$$((i+1)); \
+		if [ $$i -ge 45 ]; then \
+			echo "error: machine '$(MACHINE_NAME)' still not exec-able after 90s" >&2; \
+			exit 1; \
+		fi; \
+		sleep 2; \
+	done
+
 # Open an interactive shell as the machine user / as root.
 .PHONY: run
-run: ## Shell in as the machine user
+run: wait-ready ## Shell in as the machine user
 	container machine run -n $(MACHINE_NAME)
 
 .PHONY: root
-root: ## Shell in as root
+root: wait-ready ## Shell in as root
 	container machine run -n $(MACHINE_NAME) --root
 
 .PHONY: current-system
-current-system: ## Show the linked system generation
+current-system: wait-ready ## Show the linked system generation
 	container machine run -n $(MACHINE_NAME) --root 'readlink /run/current-system || echo "not linked yet"'
 
 .PHONY: status
-status: ## Show linked system + config source (overlay|baked) + count of failed units
+status: wait-ready ## Show linked system + config source (overlay|baked) + count of failed units
 	container machine run -n $(MACHINE_NAME) --root '\
 		echo "current-system: $$(readlink /run/current-system)"; \
 		echo "config source: $$(if [ -e /etc/nixos/machine-configuration ]; then echo overlay; else echo baked; fi)"; \
@@ -119,12 +140,12 @@ status: ## Show linked system + config source (overlay|baked) + count of failed 
 # Reporting only: apple/container cannot rename a machine, and this edits
 # neither this repo nor the Nix code. See bin/check-machine-name.sh.
 .PHONY: check-machine-name
-check-machine-name: ## Confirm the machine name and the guest's hostname agree
+check-machine-name: wait-ready ## Confirm the machine name and the guest's hostname agree
 	MACHINE_NAME="$(MACHINE_NAME)" ./bin/check-machine-name.sh
 
 # Only reclaims *free* blocks - delete first, then trim. Not destructive alone.
 .PHONY: fstrim
-fstrim: ## Reclaim host disk for freed guest blocks
+fstrim: wait-ready ## Reclaim host disk for freed guest blocks
 	container machine run -n $(MACHINE_NAME) --root 'fstrim -v /'
 
 # DNS: bin/dns.sh matches every machine to the IP its <name>.machine resolves
@@ -173,7 +194,7 @@ clean: ## Remove build artifacts + loaded image + ALL stopped containers (confir
 # the host; the guest reads it via the machine's --home-mount rw (so run make
 # from this directory).
 .PHONY: sync-config
-sync-config: ## Write machine-configuration/ as the guest's live overlay (wins precedence)
+sync-config: wait-ready ## Write machine-configuration/ as the guest's live overlay (wins precedence)
 	@test -d "$(HOST_BASE)" || { echo "missing $(HOST_BASE)" >&2; exit 2; }
 	container machine run -n $(MACHINE_NAME) --root \
 		'rm -rf /etc/nixos/machine-configuration && mkdir -p /etc/nixos/machine-configuration && cp -a "$(HOST_BASE)/." /etc/nixos/machine-configuration/'
@@ -211,7 +232,7 @@ switch-nonflake: sync-config ## [test] examples/nonflake, base = live machine-co
 # when a backup is already parked, fail with the ways out instead of
 # overwriting it. Inverse: restore-config.
 .PHONY: switch-nonflake-baked
-switch-nonflake-baked: ## [test] examples/nonflake, base = image copy (parks live overlay in .bak)
+switch-nonflake-baked: wait-ready ## [test] examples/nonflake, base = image copy (parks live overlay in .bak)
 	@test -f "$(HOST_EXAMPLES)/nonflake/configuration.nix" || \
 		{ echo "missing $(HOST_EXAMPLES)/nonflake/configuration.nix" >&2; exit 2; }
 	container machine run -n $(MACHINE_NAME) --root \
@@ -235,7 +256,7 @@ switch-nonflake-baked: ## [test] examples/nonflake, base = image copy (parks liv
 # replacing whatever sits at the overlay path (sync-config recreates that from
 # the host tree). Directory state only - run `make switch` to activate it.
 .PHONY: restore-config
-restore-config: ## [test] Bring the parked live overlay back (replaces the current one)
+restore-config: wait-ready ## [test] Bring the parked live overlay back (replaces the current one)
 	container machine run -n $(MACHINE_NAME) --root \
 		'set -e; \
 		live=/etc/nixos/machine-configuration; \
