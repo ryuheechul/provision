@@ -21,6 +21,9 @@
 #   make enable-kvm    # apply kernel + virtualization=true (restarts; state kept)
 #   make disable-kvm   # undo: default kernel + virtualization=false (restarts)
 #   make kvm-verify    # in-guest check: kernel, EL2, /dev/kvm, CONFIG_KVM
+#   make kvm-test-create # scratch KVM machine (alpine + kernel); kvm-test runs the L1 smoke
+#   make kvm-test      # L1 smoke on the scratch machine (strict -enable-kvm L2 boot)
+#   make kvm-test-clean # delete the scratch test machine (confirms)
 #   make clean         # remove build artifacts + loaded image + ALL stopped containers (prune is unfiltered; leaves the machine)
 #   make recreate      # DELETE the machine + re-create it (DESTROYS state; confirms)
 #   make delete        # DELETE the machine + its state, no recreate (DESTROYS; confirms)
@@ -65,6 +68,8 @@ KVM_CACHE          ?= $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/provision-cm
 KVM_SRC            := $(KVM_CACHE)/containerization
 KVM_KERNEL         := $(KVM_CACHE)/kernels/vmlinux-arm64-6.18.5-cz-$(shell printf '%.12s' $(KVM_REF))
 KVM_DEFAULT_KERNEL ?= $(HOME)/Library/Application Support/com.apple.container/kernels/default.kernel-arm64
+# Scratch machine for cheap L1 KVM tests (alpine; see kvm-test-create below).
+TEST_MACHINE       ?= kvm-test
 
 .PHONY: help
 help: ## Show all targets
@@ -226,6 +231,34 @@ kvm-verify: wait-ready ## Verify nested KVM in the guest (kernel, EL2, /dev/kvm,
 			echo "/proc/config.gz unreadable - skipping config check"; \
 		fi \
 	'
+
+# Cheap L1 KVM lab: a throwaway alpine machine (TEST_MACHINE, default
+# kvm-test) carrying the same KVM kernel, so boot/accel tests never touch
+# the real machine. create = bring up + apply the kernel (via enable-kvm),
+# test = the strict-KVM L2 boot inside it (bin/kvm-test.sh), clean = delete
+# the scratch machine (its state is disposable by definition).
+.PHONY: kvm-test-create
+kvm-test-create: kvm-kernel ## Create the scratch KVM test machine (alpine) + apply the kernel
+	@container machine list 2>/dev/null | grep -qE '^$(TEST_MACHINE)([ \t]|$$)' || \
+		container machine create alpine:3.22 --name $(TEST_MACHINE) --cpus 2 --memory 2G
+	@$(MAKE) enable-kvm MACHINE_NAME=$(TEST_MACHINE)
+
+.PHONY: kvm-test
+kvm-test: kvm-test-create ## L1 smoke on the scratch machine: strict -enable-kvm L2 boot
+	TEST_MACHINE=$(TEST_MACHINE) ./bin/kvm-test.sh
+
+.PHONY: kvm-test-clean
+kvm-test-clean: ## Delete the scratch KVM test machine (confirms)
+	@container machine list 2>/dev/null | grep -qE '^$(TEST_MACHINE)([ \t]|$$)' || \
+		{ echo "scratch machine '$(TEST_MACHINE)' not found - nothing to clean"; exit 0; }; \
+	read -p "Delete scratch test machine '$(TEST_MACHINE)' (test state only, disposable)? [y/N] " ans; \
+	if [ "$$ans" = "y" ] || [ "$$ans" = "Y" ]; then \
+		container machine stop $(TEST_MACHINE) 2>/dev/null || true; \
+		container machine delete $(TEST_MACHINE); \
+		echo "Deleted '$(TEST_MACHINE)'."; \
+	else \
+		echo "Aborted."; \
+	fi
 
 
 # DNS: bin/dns.sh matches every machine to the IP its <name>.machine resolves

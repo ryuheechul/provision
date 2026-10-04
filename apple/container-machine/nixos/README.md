@@ -673,6 +673,19 @@ in-repo integration kernel (ref pinned as `KVM_REF` in the Makefile):
   (default `~/.cache/...`; this repo's own namespace, not the runtime's)
 - cache semantics: the ref is part of the filename, so bumping `KVM_REF`
   misses the cache and rebuilds
+- why not a NixOS-built kernel instead:
+  - the runtime boots the kernel with no initrd, so everything the boot
+    needs must be builtin; a stock NixOS kernel is built for initrd boot
+    (virtio as modules is normal there) and would need config surgery to
+    boot this machine at all - plus a full re-validation afterwards
+  - the containerization kernel is purpose-built for this exact runtime
+    (their own integration CI passes `--virtualization`), so the choice
+    that was taken boots by design, while the NixOS one is a project of
+    its own
+  - accepted trade: provenance is a pinned containerization ref
+    (`KVM_REF`) instead of nixpkgs - acceptable because the image never
+    ships a kernel anyway, each machine supplies its own, and boot-safety
+    beats provenance for a boot-time component
 
 **Trade-offs vs the default kernel** - the swap is not free; the config is
 shaped for containerization's own integration needs:
@@ -720,7 +733,9 @@ shaped for containerization's own integration needs:
 
 - a QEMU with `-accel kvm:tcg`, e.g. a [microvm.nix](https://github.com/astro/microvm.nix)
   microvm, cloud-hypervisor, or lima
-- verified up to a NixOS microvm booting on `/dev/kvm` inside the machine
+- runnable proof kept in the repo: [`examples/microvm`](./examples/microvm) -
+  the exact flake that booted a NixOS microvm on `/dev/kvm` inside the
+  machine during validation
 
 ## Clean Up
 
