@@ -1,6 +1,7 @@
 # Sudo for the locked Apple account: direct setuid binary (no capability
-# wrapper), pam_permit account rule, and sudo-fix boot service - plus the raw
-# unix_chkpwd helper that sshd's PAM account check depends on.
+# wrapper), pam_permit account rule (for sudo and su), and sudo-fix boot
+# service - plus the raw unix_chkpwd helper that sshd's PAM account check
+# depends on.
 { config, lib, pkgs, ... }:
 
 let
@@ -54,6 +55,28 @@ in
   # it by setting security.pam.services.sudo.rules.account (e.g. re-enable
   # unix.enable) rather than lib.mkForce on the whole service.
   security.pam.services.sudo = {
+    enable = true;
+    rules.account = {
+      unix.enable = false;
+      permit = {
+        control = "required";
+        modulePath = "${config.security.pam.package}/lib/security/pam_permit.so";
+        order = 10000;
+      };
+    };
+  };
+
+  # su meets the same locked-account account-phase rejection as sudo, on the
+  # path the guest zshrc uses to re-exec the first shell after boot (`sudo
+  # su`, see the zshrc shim): the failing account check makes su print
+  #   su: Authentication service cannot retrieve authentication info
+  #   (Ignored)
+  # to that first shell's terminal while the re-exec itself still succeeds;
+  # later shells on the same boot are quiet. Same scope as the sudo rule
+  # above: account phase only - the auth phase keeps pam_rootok for root and
+  # the pam_unix password check for everyone else, and other services
+  # (login/sshd) keep their own stacks.
+  security.pam.services.su = {
     enable = true;
     rules.account = {
       unix.enable = false;
