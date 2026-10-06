@@ -34,6 +34,77 @@ let
     exec /run/current-system/sw/bin/container-machine-shell "$@"
   '';
 
+  # Persist declarative /run/current-system/* passwd shells as the absolute
+  # store path they name. Why this exists:
+  #   - NixOS normalizes a declared shell *package* to
+  #     /run/current-system/sw/<path> in the users spec
+  #     (nixos/lib/utils.nix toShellPath), so the `users` activation snippet
+  #     writes that form on every switch - for user.nix's mkForce pkgs.zsh
+  #     that is /run/current-system/sw/bin/zsh.
+  #   - /run/current-system only exists mid-activation: stage-2 mounts /run
+  #     as tmpfs (killing the image's baked graft), activation re-links at
+  #     its *end*, and systemd starts after that. Apple's init, however,
+  #     greps field 7 and execs it the instant the vminitd API accepts
+  #     commands - so the spec form is ENOENT on every boot until activation
+  #     finishes (the rc 127 boot race; the boot service and /bin bootstrap
+  #     only cover the /bin/container-machine-shell entries, not declared
+  #     ones, which the case guard in fixMachineUserShell deliberately
+  #     leaves to the declarative configuration).
+  #   - The store path needs no link: it lives on the rootfs from power-on,
+  #     is byte-for-byte the shell the configuration declares (readlink -f
+  #     against $1 = $systemConfig, the generation being activated, whose
+  #     sw paths are valid even before the final link flip), and is GC-safe
+  #     because the system profile roots its closure. Persisting it in the
+  #     mutable passwd closes the boot window without touching the spec,
+  #     the image, or anything downstream; each activation re-resolves, so
+  #     a later shell change still lands.
+  #   - The value is only ever written atomically (single mv over
+  #     /etc/passwd): init -s reads passwd live and must never see a torn
+  #     file. No-op (no mv) when nothing matches.
+  resolvePasswdShells = pkgs.writeShellScript "container-machine-resolve-passwd-shells" ''
+    # $1 = the generation being activated (the hook passes $systemConfig);
+    # its sw/ tree is valid on the rootfs before /run/current-system flips
+    # to it at the end of activation.
+    syscfg="$1"
+    # Distinct field-7 values still in the spec form; none means passwd has
+    # only /bin or store shells already - exit without touching the file.
+    shells="$(${pkgs.gawk}/bin/awk -F: '$7 ~ /^\/run\/current-system\// { print $7 }' /etc/passwd \
+      | ${pkgs.coreutils}/bin/sort -u)"
+    [ -n "$shells" ] || exit 0
+    # The temp lives in /etc - same filesystem as passwd - so the final mv
+    # is a rename(2), not a cross-device copy: passwd readers (init -s
+    # greps it live) always see a complete old or new file.
+    tmp="$(${pkgs.coreutils}/bin/mktemp /etc/passwd.container-machine.XXXXXX)"
+    ${pkgs.coreutils}/bin/cat /etc/passwd > "$tmp"
+    changed=0
+    for spec in $shells; do
+      # /run/current-system/sw/bin/zsh -> sw/bin/zsh, to replay under $syscfg
+      rel="''${spec#/run/current-system/}"
+      # -f follows the whole chain (sw/bin/zsh is itself a symlink into the
+      # store) down to one absolute store path; $syscfg instead of
+      # /run/current-system is what makes the value valid at next power-on
+      resolved="$(${pkgs.coreutils}/bin/readlink -f "$syscfg/$rel")"
+      # Target missing from this generation: keep the old entry rather
+      # than persist a dangling path
+      [ -e "$resolved" ] || continue
+      # Exact field-7 match only; rewrite the temp copy, so the temp stays
+      # a complete passwd at every loop step (still old value below)
+      ${pkgs.gawk}/bin/awk -F: -v OFS=: -v old="$spec" -v new="$resolved" \
+        '$7 == old { $7 = new } { print }' "$tmp" > "$tmp.next"
+      ${pkgs.coreutils}/bin/mv -f "$tmp.next" "$tmp"
+      changed=1
+    done
+    # Single commit point: mv only when something matched (a passwd without
+    # spec-form shells is never rewritten), chmod first because mktemp
+    # creates 0600 while passwd must stay 0644 for getpwnam as non-root
+    if [ "$changed" = 1 ]; then
+      ${pkgs.coreutils}/bin/chmod 0644 "$tmp"
+      ${pkgs.coreutils}/bin/mv -f "$tmp" /etc/passwd
+    else
+      ${pkgs.coreutils}/bin/rm -f "$tmp"
+    fi
+  '';
+
   fixMachineUserShell = pkgs.writeShellScript "container-machine-fix-user-shell" ''
     # Reconcile machine-user passwd shells with the bootstrap. Walk-through,
     # since the script is dense:
@@ -89,8 +160,27 @@ in
   # predates the graft still gets it. Ordered before the users snippet (deps
   # below) so passwd pointing at /bin/container-machine-shell never lands
   # before the file exists.
-  system.activationScripts.containerMachineShellBootstrap.text =
-    "${pkgs.coreutils}/bin/install -m 0755 ${shellBootstrap} /bin/container-machine-shell\n";
+  #
+  # Plain install is delete-then-copy: unlink the old file, then copy the
+  # bytes (store read, write loop, chmod), and that copy is not instant.
+  # Readers of the destination during the gap - root's passwd shell execs
+  # this path mid-switch, plus existence probes (truncation misses were
+  # observed in testing) - see a missing or half-written file:
+  #
+  #   install:     --old file--|--empty/half--|--new file-->
+  #                             ^ exec here: file not found or broken script
+  #   staged mv:   --old file----------------|--new file-->
+  #                             ^ exec here: complete old or complete new
+  #
+  # So write the full copy under a name nobody opens, then publish the real
+  # name with a single mv: same filesystem, so the swap is one atomic step,
+  # never a gap. Mode is set on the temp first, so the name never exists
+  # un-executable. A crash between the two lines leaves an orphan .new plus
+  # the intact old file; the next activation restages over it.
+  system.activationScripts.containerMachineShellBootstrap.text = ''
+    ${pkgs.coreutils}/bin/install -m 0755 ${shellBootstrap} /bin/.container-machine-shell.new
+    ${pkgs.coreutils}/bin/mv -f /bin/.container-machine-shell.new /bin/container-machine-shell
+  '';
   system.activationScripts.users.deps = [ "containerMachineShellBootstrap" ];
 
   # 900 (not mkDefault): NixOS sets root.shell at mkDefault (1000) priority,
@@ -118,6 +208,15 @@ in
   system.activationScripts.containerMachineShellFix = {
     deps = [ "containerMachineUserFix" ];
     text = "${fixMachineUserShell}\n";
+  };
+
+  # Last in the chain (users -> userFix -> shellFix): perl has just written
+  # the spec form, the Apple-shell fix has just run, and $systemConfig is the
+  # new generation - resolve any remaining /run/current-system/* shell to its
+  # store path so the value that persists on disk is valid at power-on.
+  system.activationScripts.containerMachineShellResolve = {
+    deps = [ "containerMachineShellFix" ];
+    text = "${resolvePasswdShells} \"$systemConfig\"\n";
   };
 
   # Apple's runtime forks the passwd shell with no USER/LOGNAME; a bare switch
