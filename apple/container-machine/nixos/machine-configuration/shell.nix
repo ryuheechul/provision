@@ -1,6 +1,7 @@
 # Shell / PATH shims for the Apple runtime: container-machine-shell wrapper,
 # the /bin pre-activation bootstrap it hands off from, shell-fix boot service,
-# and USER/LOGNAME profile hooks.
+# declarative passwd shells resolved to store paths, and USER/LOGNAME profile
+# hooks.
 { lib, pkgs, ... }:
 
 let
@@ -39,8 +40,9 @@ let
   #   - NixOS normalizes a declared shell *package* to
   #     /run/current-system/sw/<path> in the users spec
   #     (nixos/lib/utils.nix toShellPath), so the `users` activation snippet
-  #     writes that form on every switch - for user.nix's mkForce pkgs.zsh
-  #     that is /run/current-system/sw/bin/zsh.
+  #     writes that form on every switch - any configuration declaring the
+  #     shell as a package (users.users.<name>.shell = pkgs.zsh) lands here
+  #     as /run/current-system/sw/bin/zsh.
   #   - /run/current-system only exists mid-activation: stage-2 mounts /run
   #     as tmpfs (killing the image's baked graft), activation re-links at
   #     its *end*, and systemd starts after that. Apple's init, however,

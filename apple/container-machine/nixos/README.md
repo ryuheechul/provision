@@ -194,7 +194,7 @@ sandbox, and `build.sh` works from any Linux box with nix.
 bin/build-on-container.sh    # build the OCI archive in an Apple `container` sandbox
 # or: bin/build.sh           # any Linux box with nix
 bin/launch.sh                # load the image + create the machine (create-if-missing)
-container machine run -n nixos-cm   # shell in - as the macOS account (e.g. heechul)
+container machine run -n nixos-cm   # shell in - as the macOS account (e.g. alice)
 ```
 
 The [Makefile](./Makefile) wraps those scripts as convenience targets
@@ -379,7 +379,11 @@ service, mirrored as an activation snippet so a switch migrates
 immediately) re-points the initial `/bin/sh` entry - and the legacy
 pre-bootstrap `/run/current-system/...` entry written by older
 configurations - at the bootstrap, rewriting only those two shapes so
-declarative shells stay untouched. The wrapper prepends
+declarative shells stay untouched. Declarative
+`/run/current-system/sw/...` shells get the opposite treatment from the
+last activation snippet (`containerMachineShellResolve`): rewritten to
+the generation's store path, which exists from power-on with no `/run`
+link (see [compat shims](#compat-shims)). The wrapper prepends
 `/usr/local/bin:/run/wrappers/bin:/run/current-system/sw/bin` to the
 PATH, so `git`, `curl`, `nix`, and direct `sudo` resolve from the
 system profile or the persistent root filesystem (where
@@ -514,7 +518,7 @@ guest stays healthy (the latter survives `nixos-rebuild switch`):
 | `nosuid` `/run` and unsupported capability probing | A direct setuid copy of `sudo` is installed at `/usr/local/bin/sudo` on the persistent root filesystem; NixOS capability wrappers are disabled |
 | sshd login dies at PAM account once wrappers are cleared | `pam_unix` execs `/run/wrappers/bin/unix_chkpwd` (sshd's unprivileged privsep child cannot read `/etc/shadow` itself), so clearing wrappers removes the helper and every login is rejected right after key acceptance with `fatal: Access denied for user <name> by PAM account configuration [preauth]`. Re-adding a `security.wrappers` entry does not help: the compiled wrapper's capability probing fails on this kernel (`cannot get capabilities for /proc/self/exe: Not supported`) and it exits before execing the helper. The `suid-sgid-wrappers` unit's `postStart` installs the raw `4755` helper right after the wrappers dir is (re)built - `/run/wrappers` is its own tmpfs without `nosuid`, unlike `/run` itself |
 | Container-created user can't reach nix tools / `sudo` | `container-machine-shell-fix` re-points its shell at the `/bin` bootstrap (which hands off to the PATH wrapper); Apple provisioning supplies the sudoers rule and `container-machine-sudo-fix` installs direct sudo |
-| Locked Apple user fails PAM account checks | The sudo account rule uses `pam_permit` because `NOPASSWD` skips authentication but does not bypass `pam_unix` account validation; `su` meets the same rejection on the zshrc group re-exec path (`sudo su`), where it surfaced as `su: Authentication service cannot retrieve authentication info (Ignored)` on the first shell after boot. Only the account phase is replaced for `su` - the auth phase and other services keep `pam_unix`, and account expiry stays unenforced for `su` (sshd/login still enforce it). Downstream configurations can replace these compatibility rules by setting `security.pam.services.sudo.rules.account` or `security.pam.services.su.rules.account` |
+| Locked Apple user fails PAM account checks | The sudo account rule uses `pam_permit` because `NOPASSWD` skips authentication but does not bypass `pam_unix` account validation; `su` meets the same rejection on the shell-startup group re-exec path (`sudo su`), where it surfaced as `su: Authentication service cannot retrieve authentication info (Ignored)` on the first shell after boot. Only the account phase is replaced for `su` - the auth phase and other services keep `pam_unix`, and account expiry stays unenforced for `su` (sshd/login still enforce it). Downstream configurations can replace these compatibility rules by setting `security.pam.services.sudo.rules.account` or `security.pam.services.su.rules.account` |
 | Legacy `nixos-rebuild` needs a nixpkgs path | Upstream `nix.channel.enable` + `nix.nixPath` defaults provide it through `/etc/set-environment` (login shells load it; `make switch` sources it explicitly). Downstream configurations can override `nix.nixPath` and the Makefile picks the change up automatically |
 | Nix daemon access and feature defaults | Only `root` is trusted by default; `nix-command` and flakes are enabled as defaults so downstream configurations can replace them |
 

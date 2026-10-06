@@ -10,6 +10,25 @@ let
   sudoCommand = pkgs.writeShellScriptBin "sudo" ''
     exec /usr/local/bin/sudo "$@"
   '';
+
+  # Shared PAM *account*-phase compatibility for the locked Apple account,
+  # used by both services below: pam_unix account validation rejects the
+  # locked shadow entry even when authentication is skipped (NOPASSWD for
+  # sudo, pam_rootok in su's auth phase), so only the account phase is
+  # replaced - pam_unix drops out, pam_permit is required. Auth/session
+  # phases and every other service (login/sshd) keep their stacks; account
+  # expiry stays unenforced for these two services only (sshd and login
+  # still enforce it). Downstream overrides stay per service via
+  # security.pam.services.<name>.rules.account (e.g. re-enable
+  # unix.enable) rather than lib.mkForce on the whole service.
+  lockedAccountRules = {
+    unix.enable = false;
+    permit = {
+      control = "required";
+      modulePath = "${config.security.pam.package}/lib/security/pam_permit.so";
+      order = 10000;
+    };
+  };
 in
 {
   # Apple creates a locked account without a password. A direct setuid sudo
@@ -32,7 +51,7 @@ in
   # logging-in user), which cannot read /etc/shadow itself. Without the helper
   # every ssh login is rejected right after the key is accepted:
   #   fatal: Access denied for user <name> by PAM account configuration
-  # The pam_permit rule further down scopes to sudo only, so it cannot cover
+  # The pam_permit rules further down scope to sudo/su, so they cannot cover
   # this. Re-adding a security.wrappers entry does NOT work either: NixOS's
   # compiled security wrapper probes file capabilities on /proc/self/exe, which
   # this kernel rejects ("cannot get capabilities for /proc/self/exe: Not
@@ -45,47 +64,25 @@ in
   systemd.services.suid-sgid-wrappers.postStart = lib.mkAfter ''
     ${pkgs.coreutils}/bin/install -m 4755 -o root -g root ${config.security.pam.package}/bin/unix_chkpwd /run/wrappers/bin/unix_chkpwd
   '';
-  # Apple provisions the machine user with a locked shadow entry. NOPASSWD
-  # skips password authentication, but normal pam_unix account validation
-  # still rejects that locked account, making sudo unusable in a bare image.
-  # Scope: sudo's PAM *account* phase only (not auth/session; other services
-  # like login/sshd untouched). This is an explicit compatibility rule, not a
-  # general user-policy default: account expiry/lock checks are skipped for
-  # sudo in favor of sudoers as the authority. A downstream config can change
-  # it by setting security.pam.services.sudo.rules.account (e.g. re-enable
-  # unix.enable) rather than lib.mkForce on the whole service.
+  # For sudo: NOPASSWD skips password authentication, but without the shared
+  # account rule above the locked account was rejected anyway, making sudo
+  # unusable in a bare image. sudoers is the authority for this account, not
+  # pam_unix aging checks.
   security.pam.services.sudo = {
     enable = true;
-    rules.account = {
-      unix.enable = false;
-      permit = {
-        control = "required";
-        modulePath = "${config.security.pam.package}/lib/security/pam_permit.so";
-        order = 10000;
-      };
-    };
+    rules.account = lockedAccountRules;
   };
 
-  # su meets the same locked-account account-phase rejection as sudo, on the
-  # path the guest zshrc uses to re-exec the first shell after boot (`sudo
-  # su`, see the zshrc shim): the failing account check makes su print
+  # For su: the guest's shell startup re-execs the first shell after boot
+  # through it (`sudo su`), so the same rejection surfaced as
   #   su: Authentication service cannot retrieve authentication info
   #   (Ignored)
-  # to that first shell's terminal while the re-exec itself still succeeds;
-  # later shells on the same boot are quiet. Same scope as the sudo rule
-  # above: account phase only - the auth phase keeps pam_rootok for root and
-  # the pam_unix password check for everyone else, and other services
-  # (login/sshd) keep their own stacks.
+  # on that shell's terminal (the re-exec itself still succeeded; later
+  # shells on the same boot were quiet). The auth phase keeps pam_rootok
+  # for root and the pam_unix password check for everyone else.
   security.pam.services.su = {
     enable = true;
-    rules.account = {
-      unix.enable = false;
-      permit = {
-        control = "required";
-        modulePath = "${config.security.pam.package}/lib/security/pam_permit.so";
-        order = 10000;
-      };
-    };
+    rules.account = lockedAccountRules;
   };
   environment.etc."sudoers".text = ''
     Defaults secure_path="/usr/local/bin:/run/current-system/sw/bin:/usr/bin:/bin"
