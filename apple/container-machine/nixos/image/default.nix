@@ -48,7 +48,23 @@ let
       # imports this same profile so nixos-rebuild switch does not flip
       # defaults; lxc-container.nix was rejected there - see that file.
       "${nixpkgs}/nixos/modules/virtualisation/docker-image.nix"
-      { nixpkgs.hostPlatform = system; }
+      {
+        nixpkgs.hostPlatform = system;
+        # Documentation is the image's heaviest passenger - the NixOS
+        # manual output alone is 197 MB of store content (~0.47 GiB on
+        # disk once unpacked) - and nothing consults it before the first
+        # switch. This module only shapes the image eval: the switch-time
+        # configuration never sees it (it evaluates machine-configuration
+        # alone, where documentation.* keeps its NixOS default - enabled -
+        # unless the host config says otherwise), so docs return with the
+        # first switch. Dropping it shrinks the tarball and the set of
+        # paths the GC-roots manifest has to pin for the machine's life.
+        documentation.enable = false;
+        documentation.man.enable = false;
+        documentation.info.enable = false;
+        documentation.doc.enable = false;
+        documentation.nixos.enable = false;
+      }
     ];
   };
 

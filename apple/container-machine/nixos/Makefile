@@ -10,7 +10,8 @@
 #   make launch        # load the image + create the machine (create-if-missing)
 #   make run           # shell in as the machine user
 #   make root          # root shell
-#   make wait-ready    # boot (if needed) + wait until exec works (stage-2 linked)
+#   make wait-exec    # boot (if needed) + wait until exec works (not stage-2)
+#   make wait-ready   # wait until stage-2/systemd/nix-daemon are up (switch gate)
 #   make status        # key facts about the running config
 #   make dns           # machine DNS check: <name>.machine -> IP match
 #   make dns-set       # register the machine DNS domain (sudo)
@@ -126,9 +127,11 @@ delete: ## Delete the machine + its persisted state (DESTROYS; confirms)
 # with a transient ENOENT on the shell path (see machine-configuration/shell.nix,
 # which closes it only for bootstrap shells). Every target that execs into the
 # machine waits here first: boots a stopped machine, then polls `run true`
-# until stage-2 is done (costs one fast probe when already warm).
-.PHONY: wait-ready
-wait-ready: ## Boot (if needed) + wait until the machine accepts exec
+# until exec works (costs one fast probe when already warm). Exec working is
+# NOT stage-2 completion - systemd and the nix-daemon socket come up later,
+# and `run true` says nothing about them (see wait-ready).
+.PHONY: wait-exec
+wait-exec: ## Boot (if needed) + wait until the machine accepts exec
 	@container machine list 2>/dev/null | grep -qE '^$(MACHINE_NAME)([ \t]|$$)' || \
 		{ echo "error: machine '$(MACHINE_NAME)' not found (make launch first)" >&2; exit 1; }
 	@i=0; \
@@ -141,21 +144,51 @@ wait-ready: ## Boot (if needed) + wait until the machine accepts exec
 		sleep 2; \
 	done
 
+# Gate for anything that runs nixos-rebuild inside the guest. Switching into
+# the wait-exec-only window fails with "cannot connect to socket
+# .../daemon-socket/socket: Connection refused" - a switch issued right after
+# a reboot races stage-2. Requires all three: activation linked a real store
+# path (the boot graft is current-system -> /), systemd answers on the bus,
+# and the daemon responds. run/root/status stay on wait-exec so a machine
+# with a broken stage-2 remains reachable for rescue and diagnosis.
+.PHONY: wait-ready
+wait-ready: wait-exec ## wait-exec + stage-2/systemd/nix-daemon all up
+	@i=0; \
+	while :; do \
+		ready=1; \
+		cur=$$(container machine run -n $(MACHINE_NAME) --root 'readlink /run/current-system 2>/dev/null' 2>/dev/null || true); \
+		case "$$cur" in /nix/store/*) ;; *) ready=0 ;; esac; \
+		if [ $$ready -eq 1 ]; then \
+			st=$$(container machine run -n $(MACHINE_NAME) --root 'systemctl is-system-running 2>/dev/null' 2>/dev/null || true); \
+			case "$$st" in running|degraded) ;; *) ready=0 ;; esac; \
+		fi; \
+		if [ $$ready -eq 1 ]; then \
+			container machine run -n $(MACHINE_NAME) --root '. /etc/set-environment && nix store ping >/dev/null 2>&1' >/dev/null 2>&1 || ready=0; \
+		fi; \
+		[ $$ready -eq 1 ] && exit 0; \
+		i=$$((i+1)); \
+		if [ $$i -ge 60 ]; then \
+			echo "error: machine '$(MACHINE_NAME)' never became ready (stage-2/systemd/nix-daemon) after 180s" >&2; \
+			exit 1; \
+		fi; \
+		sleep 3; \
+	done
+
 # Open an interactive shell as the machine user / as root.
 .PHONY: run
-run: wait-ready ## Shell in as the machine user
+run: wait-exec ## Shell in as the machine user
 	container machine run -n $(MACHINE_NAME)
 
 .PHONY: root
-root: wait-ready ## Shell in as root
+root: wait-exec ## Shell in as root
 	container machine run -n $(MACHINE_NAME) --root
 
 .PHONY: current-system
-current-system: wait-ready ## Show the linked system generation
+current-system: wait-exec ## Show the linked system generation
 	container machine run -n $(MACHINE_NAME) --root 'readlink /run/current-system || echo "not linked yet"'
 
 .PHONY: status
-status: wait-ready ## Show linked system + config source (overlay|baked) + count of failed units
+status: wait-exec ## Show linked system + config source (overlay|baked) + count of failed units
 	container machine run -n $(MACHINE_NAME) --root '\
 		echo "current-system: $$(readlink /run/current-system)"; \
 		echo "config source: $$(if [ -e /etc/nixos/machine-configuration ]; then echo overlay; else echo baked; fi)"; \
@@ -166,12 +199,12 @@ status: wait-ready ## Show linked system + config source (overlay|baked) + count
 # Reporting only: apple/container cannot rename a machine, and this edits
 # neither this repo nor the Nix code. See bin/check-machine-name.sh.
 .PHONY: check-machine-name
-check-machine-name: wait-ready ## Confirm the machine name and the guest's hostname agree
+check-machine-name: wait-exec ## Confirm the machine name and the guest's hostname agree
 	MACHINE_NAME="$(MACHINE_NAME)" ./bin/check-machine-name.sh
 
 # Only reclaims *free* blocks - delete first, then trim. Not destructive alone.
 .PHONY: fstrim
-fstrim: wait-ready ## Reclaim host disk for freed guest blocks
+fstrim: wait-exec ## Reclaim host disk for freed guest blocks
 	container machine run -n $(MACHINE_NAME) --root 'fstrim -v /'
 
 # Nested virtualization (KVM). One-time setup: build the kernel (kvm-kernel),
@@ -197,13 +230,13 @@ kvm-kernel: ## Build the pinned KVM-capable kernel into the cache (no-op if buil
 	fi
 
 # Apply it to the machine: stop, set kernel + virtualization, boot again.
-# `set` takes effect at the next boot; wait-ready boots a stopped machine and
-# absorbs the stage-2 window. State persists across the restart.
+# `set` takes effect at the next boot; wait-exec boots a stopped machine and
+# returns once it accepts commands. State persists across the restart.
 .PHONY: enable-kvm
 enable-kvm: kvm-kernel ## Stop, apply kernel= + virtualization=true, boot (state persists)
 	container machine stop $(MACHINE_NAME) 2>/dev/null || true
 	container machine set -n $(MACHINE_NAME) kernel="$(KVM_KERNEL)" virtualization=true
-	@$(MAKE) wait-ready
+	@$(MAKE) wait-exec
 	@echo "kvm enabled on '$(MACHINE_NAME)'; now: make kvm-verify"
 
 # Undo handle for enable-kvm: back on the CLI's default kernel with
@@ -213,14 +246,14 @@ enable-kvm: kvm-kernel ## Stop, apply kernel= + virtualization=true, boot (state
 disable-kvm: ## Restore the default kernel + virtualization=false (restarts)
 	container machine stop $(MACHINE_NAME) 2>/dev/null || true
 	container machine set -n $(MACHINE_NAME) kernel="$(KVM_DEFAULT_KERNEL)" virtualization=false
-	@$(MAKE) wait-ready
+	@$(MAKE) wait-exec
 	@echo "kvm disabled on '$(MACHINE_NAME)' (default kernel restored)"
 
 # In-guest proof: custom kernel, EL2 entry, /dev/kvm (with udev mode), and
 # CONFIG_KVM=y. Non-zero exit when /dev/kvm or the config flag is missing -
 # exactly the two things a default-kernel machine lacks.
 .PHONY: kvm-verify
-kvm-verify: wait-ready ## Verify nested KVM in the guest (kernel, EL2, /dev/kvm, config)
+kvm-verify: wait-exec ## Verify nested KVM in the guest (kernel, EL2, /dev/kvm, config)
 	container machine run -n $(MACHINE_NAME) --root '\
 		echo "kernel: $$(uname -r)"; \
 		dmesg | grep -q "started at EL2" && echo "EL2: yes" || echo "EL2: not in dmesg ring (was seen at boot)"; \
@@ -304,8 +337,9 @@ clean: ## Remove build artifacts + loaded image + ALL stopped containers (confir
 
 # Copy machine-configuration/ into the running machine as the live overlay
 # (the path that wins configuration precedence; no image build). Expanded on
-# the host; the guest reads it via the machine's --home-mount rw (so run make
-# from this directory).
+# host; the guest reads it via the machine's --home-mount rw (so run make
+# from this directory). Gates on wait-ready: this is the first half of
+# every switch target, and nixos-rebuild right after it needs the daemon.
 .PHONY: sync-config
 sync-config: wait-ready ## Write machine-configuration/ as the guest's live overlay (wins precedence)
 	@test -d "$(HOST_BASE)" || { echo "missing $(HOST_BASE)" >&2; exit 2; }
@@ -369,7 +403,7 @@ switch-nonflake-baked: wait-ready ## [test] examples/nonflake, base = image copy
 # replacing whatever sits at the overlay path (sync-config recreates that from
 # the host tree). Directory state only - run `make switch` to activate it.
 .PHONY: restore-config
-restore-config: wait-ready ## [test] Bring the parked live overlay back (replaces the current one)
+restore-config: wait-exec ## [test] Bring the parked live overlay back (replaces the current one)
 	container machine run -n $(MACHINE_NAME) --root \
 		'set -e; \
 		live=/etc/nixos/machine-configuration; \

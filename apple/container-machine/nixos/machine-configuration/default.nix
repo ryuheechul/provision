@@ -16,6 +16,7 @@
     ./users.nix
     ./runtime.nix
     ./nix.nix
+    ./image-gcroots.nix
   ];
 
   system.stateVersion = lib.mkDefault "26.05";

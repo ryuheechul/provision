@@ -9,6 +9,8 @@
 #   SHELL_BOOTSTRAP       store path of the wait-for-/run/current-system shim
 #   MACHINE_CONFIGURATION source tree for the baked configuration fallback
 #   $out                   destination rootfs tree (set by runCommand)
+# Also writes $out/etc/nixos/image-gcroots.manifest: every store path the
+# rootfs references, for the GC-roots activation (image-gcroots.nix).
 set -euo pipefail
 
 mkdir -p "$out"
@@ -44,3 +46,42 @@ while IFS= read -r entry; do
   path="${entry#*=}"
   ln -sfn "$path" "$out/bin/$name"
 done <<< "$BIN_SHIMS"
+
+# GC roots manifest (see machine-configuration/image-gcroots.nix): nix only
+# protects store paths reachable from roots (profiles, gcroots), and it
+# cannot see that rootfs files reference anything - /init -> image system,
+# /bin/{cut,id,chown} -> image coreutils, /bin/grep -> image gnugrep, and
+# every other store path the grafts above or the tarball wrote outside
+# /nix. A guest-run nix-collect-garbage would keep the files but collect
+# their targets: boot then dies at exec /sbin/init (127) with no way back
+# into the machine to repair it. Manifest every store reference outside
+# /nix (references inside the store are tracked in nix's DB and become
+# protected transitively once the rooted ones are); activation turns the
+# manifest into real GC roots before any user GC can run.
+manifest="$out/etc/nixos/image-gcroots.manifest"
+{
+  # Symlink targets: first component after /nix/store IS the store path
+  # (the rest of the target may be a subpath inside it).
+  while IFS= read -r -d '' link; do
+    target=$(readlink "$link")
+    case "$target" in
+      /nix/store/*)
+        rest="${target#/nix/store/}"
+        printf '/nix/store/%s\n' "${rest%%/*}"
+        ;;
+    esac
+  done < <(find "$out" -path "$out/nix" -prune -o -type l -print0)
+  # Textual references (including ELF binaries): the regex stops at the
+  # first component, which is exactly the store path. Over-collection is
+  # fine - the activation side skips paths that do not exist. The one
+  # exception is nix-path-registration: it is a nix-store --dump-db dump
+  # of the build machine's whole database (2517 records in the current
+  # tarball), not a rootfs reference, and scanning it pinned the build
+  # toolchain - gcc, binutils, stdenv and hooks, ~0.31 GiB - that
+  # nothing in the image references at runtime. Everything that must
+  # stay rooted is a genuine hit elsewhere: the image toplevel behind
+  # /init, the /bin shim symlink targets above, the passwd shell.
+  find "$out" -path "$out/nix" -prune -o -type f \
+    ! -name nix-path-registration -print0 | \
+    xargs -0 -r grep -a -h -o -E '/nix/store/[A-Za-z0-9+._?-]+' || true
+} | sort -u > "$manifest"

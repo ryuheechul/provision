@@ -411,7 +411,7 @@ on its disk (`rootfs.ext4`).
 - [`image/common.nix`](./image/common.nix) - shared platform facts (`ociArchitecture`, `tarFlags`), static file contents, and OCI JSON templates (`builtins.toJSON`).
 - [`image/rootfs.nix`](./image/rootfs.nix) - unpacks the system tarball, grafts the Container machine boot bits (`sbin/init -> /init`, `/run/current-system -> /`, `/bin` shims), packs the bare rootfs tarball.
 - [`image/oci.nix`](./image/oci.nix) - assembles the minimal single-layer OCI archive and the Dockerfile build context (**manual fallback** via `make build-context`, not used by `make build`).
-- [`image/bin/`](./image/bin) - shell bodies for the rootfs/OCI derivations (`make-rootfs.sh`, `pack-oci-image.sh`, ...), driven by Nix-provided env vars (shellcheck-friendly; not under the gitignored `build/`).
+- [`image/bin/`](./image/bin) - shell bodies for the rootfs/OCI derivations (`make-rootfs.sh` grafts the boot bits and records the [GC-roots manifest](#garbage-collection-safety), `pack-oci-image.sh`, ...), driven by Nix-provided env vars (shellcheck-friendly; not under the gitignored `build/`).
 
 #### Packaging Paths
 
@@ -431,6 +431,7 @@ Same guest `rootfsTree` either way; only packaging and how `container` ingests i
 
 - [`machine-configuration/default.nix`](./machine-configuration/default.nix) - entry: identity (`stateVersion`, `hostName`), shared packages; generates the self-staged `configuration.nix` (parallel to NixOS's `hardware-configuration.nix`) that picks between the two configuration paths described below, and imports the modules below. The generated `configuration.nix` imports `virtualisation/docker-image.nix` - the same profile as the image build, so a switch does not flip defaults (`lxc-container.nix` was rejected; see the comment there).
 - [`machine-configuration/networking.nix`](./machine-configuration/networking.nix) - systemd-resolved + `runtime-gateway-dns`, firewall off, `useHostResolvConf` override.
+- [`machine-configuration/image-gcroots.nix`](./machine-configuration/image-gcroots.nix) - `containerMachineImageGcroots` activation: re-registers the image's rootfs grafts as indirect GC roots so a guest `nix-collect-garbage` cannot unlink them (see [Garbage collection safety](#garbage-collection-safety)).
 - [`machine-configuration/shell.nix`](./machine-configuration/shell.nix) - `container-machine-shell` PATH wrapper, the `/bin/container-machine-shell` wait-for-`/run/current-system` bootstrap it hands off to, shell-fix service, declarative `/run/current-system/sw/*` shells resolved to store paths in the mutable passwd (first-boot exec race), `USER`/`LOGNAME` profile hooks.
 - [`machine-configuration/sudo.nix`](./machine-configuration/sudo.nix) - direct setuid sudo, pam_permit account rules for sudo and su, sudo-fix service.
 - [`machine-configuration/users.nix`](./machine-configuration/users.nix) - mutable passwd, restore-user service + activation script (Apple-provisioned account).
@@ -521,6 +522,7 @@ guest stays healthy (the latter survives `nixos-rebuild switch`):
 | Locked Apple user fails PAM account checks | The sudo account rule uses `pam_permit` because `NOPASSWD` skips authentication but does not bypass `pam_unix` account validation; `su` meets the same rejection on the shell-startup group re-exec path (`sudo su`), where it surfaced as `su: Authentication service cannot retrieve authentication info (Ignored)` on the first shell after boot. Only the account phase is replaced for `su` - the auth phase and other services keep `pam_unix`, and account expiry stays unenforced for `su` (sshd/login still enforce it). Downstream configurations can replace these compatibility rules by setting `security.pam.services.sudo.rules.account` or `security.pam.services.su.rules.account` |
 | Legacy `nixos-rebuild` needs a nixpkgs path | Upstream `nix.channel.enable` + `nix.nixPath` defaults provide it through `/etc/set-environment` (login shells load it; `make switch` sources it explicitly). Downstream configurations can override `nix.nixPath` and the Makefile picks the change up automatically |
 | Nix daemon access and feature defaults | Only `root` is trusted by default; `nix-command` and flakes are enabled as defaults so downstream configurations can replace them |
+| Guest `nix-collect-garbage` unlinks the image's rootfs grafts (`/sbin/init -> /init`, the `/bin` shims - store paths no profile references), so the machine stops booting | The image build writes `/etc/nixos/image-gcroots.manifest` (rootfs references outside `/nix`), and the `containerMachineImageGcroots` activation turns it into symlinks under `/nix/var/nix/gcroots/image/` on each boot and switch - the links live outside any generation, so image-era targets stay rooted through any number of switches, while generation-following grafts like `/init` ride the system profile (see [Garbage collection safety](#garbage-collection-safety)) |
 
 ## Prior Art
 
@@ -565,6 +567,104 @@ Observations (verified 2026-08):
   ```
 
   Only *free* blocks are reclaimed (delete first, then trim). Disk usage is otherwise monotonic until the machine is deleted.
+- Guest-side `nix-collect-garbage` is safe to run and reclaims real space inside the guest: it collects old generations and unreferenced paths but cannot unlink the image's rootfs grafts ([GC-rooted](#garbage-collection-safety)). Pair it with `fstrim` to return the freed blocks to the host file.
+
+## Garbage Collection Safety
+
+The image grafts the boot chain into the rootfs as symlinks into the
+guest store (`/sbin/init -> /init`, the `/bin` shims, ...), but no
+profile references those paths - a guest `nix-collect-garbage` sees them
+as unreferenced. One approved run on the old machine deleted 3,745 paths
+(coreutils, gnugrep, the image's system toplevel) and the machine no
+longer booted: `/sbin/init -> /init` pointed at the deleted toplevel and
+every shell died on the deleted `/bin` shims.
+
+Two pieces keep guest GC safe:
+
+1. [`image/bin/make-rootfs.sh`](./image/bin/make-rootfs.sh) scans the
+   rootfs outside `/nix` at image build - symlink targets plus textual
+   and ELF references - and records the **store paths** they name in
+   `/etc/nixos/image-gcroots.manifest` (30 entries in the current
+   image). The manifest is static on purpose: store paths are
+   content-addressed and immutable, and the references it covers were
+   baked into the image, so no switch can invalidate a line.
+2. the `containerMachineImageGcroots` activation snippet in
+   [`machine-configuration/image-gcroots.nix`](./machine-configuration/image-gcroots.nix)
+   runs on every boot and switch and (re)creates a symlink in
+   `/nix/var/nix/gcroots/image/` for each manifest entry that still
+   exists, and removes any link whose store path the manifest no longer
+   lists (a smaller manifest - like the one this change produces - must
+   be able to drop roots, or its former entries would stay rooted
+   forever) - nix treats a
+   gcroot symlink as an indirect root of its target. The links live on
+   the guest disk rather than in any
+   generation, so dropping old generations cannot drop the roots, and
+   re-running is an idempotent refresh: the first activation creates
+   them, before any user command can run GC.
+
+Roots then split by what the graft follows. Frozen image references -
+the image's own system, the `/bin` coreutils/gnugrep shims, the
+`install-docker-init` bootloader - ride the manifest links for the
+machine's lifetime. Grafts that follow the current generation - `/init`,
+rewritten by `install-docker-init` (`ln -fs $systemConfig/init /init`)
+on every switch, and `/bin/sh`, relinked to the current bash by the
+`binsh` activation snippet - are rooted by the system profile while
+current, and a switch repoints them before the old generation becomes
+collectable. So every live target is referenced by either the profile
+or the manifest roots at all times, while old generations and their
+exclusive closure still collect. Verified end-to-end: after
+`nix-collect-garbage --delete-older-than 1d` plus `-d` freed 1,328
+paths, every manifest entry still resolved (`nix-store --query --roots`
+on the image system shows its gcroot link) and the machine rebooted to
+a clean first shell.
+
+### Pinned cost
+
+Roots are add-only on any given machine - the manifest is baked into
+the image and never changes there - so every manifest entry costs disk
+for the machine's lifetime. Measured on the image before this change:
+523 of the 533 entries (1.41 GiB) lie outside the live system's closure,
+in two parts:
+
+- about 1.10 GiB is the image's own system closure - the toplevel the
+  machine boots before its first switch plus its heavy dependencies
+  (the NixOS documentation output, python3, systemd, perl, git). These
+  stay rooted because the boot chain and the shims point at them.
+- about 0.31 GiB is build-time over-collection. Only around 30 entries
+  are genuine rootfs references captured at image build time; the rest
+  come from `nix-path-registration`, which `make-rootfs.sh` scans like
+  any other rootfs file. That file is a `nix-store --dump-db` dump of
+  the build machine's whole database, so it also lists the stdenv
+  toolchain (gcc, binutils, gnumake, builder hooks) that nothing in the
+  image references at runtime.
+
+The imbalance is accepted on purpose: keeping too much wastes at most a
+few GiB, while keeping too little produces a machine that cannot boot or
+repair itself.
+
+Two reductions land with this change, effective from the next image
+rebuild: the scan skips `nix-path-registration` (drops the unused build
+toolchain, ~0.31 GiB), and the image eval sets `documentation.* = false`
+(drops the NixOS manual output - 197 MB of store content, ~0.47 GiB
+once unpacked on disk; the switch-time evaluation does not include this
+module, so NixOS's default - documentation enabled - applies from the
+first switch). Together they take the pinned set from
+1.41 GiB to roughly 0.9 GiB of store content: the image's own runtime
+system, which must ship because it is what boots before the first
+switch.
+
+A third lever was considered and declined: pin the image's nixpkgs to
+the rev the machine actually runs so the two closures share store paths
+(up to ~0.8 GiB more). There is nothing to align today - the build takes
+`nixpkgs` from the ambient `NIX_PATH` ([`image/default.nix`](./image/default.nix)),
+which [`bin/build-on-container.sh`](./bin/build-on-container.sh) sets to
+the moving `channel:nixos-26.05` rather than a rev this repo pins, and
+the only declared rev lives in dotfiles
+(`nix/niv-shim/nix/sources.json`). Using it would mean mirroring that
+rev across two repositories and CI with nothing enforcing the mirror:
+every `niv update` would drift silently and the duplicated disk would
+grow back with no error anywhere. The one-time saving does not pay for
+a permanent, unenforced sync obligation.
 
 ## DNS (Host Side)
 
