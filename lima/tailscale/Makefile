@@ -11,7 +11,8 @@ debug-enter:
 
 .PHONY: teardown-debug
 teardown-debug:
-	limactl stop tailscale-debug || limactl delete tailscale-debug
+	limactl stop tailscale-debug || true
+	limactl delete tailscale-debug
 
 .PHONY: start-notty
 start-notty:

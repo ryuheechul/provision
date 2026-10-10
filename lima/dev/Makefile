@@ -2,7 +2,7 @@ LIMA_INSTANCE ?= dev
 
 .PHONY: debug
 debug: teardown-debug
-	limactl start --debug --tty=false --name=dev-debug ./config.yaml
+	limactl start --debug --tty=false dev-debug
 	$(MAKE) debug-enter
 
 .PHONY: debug-enter
@@ -11,7 +11,8 @@ debug-enter:
 
 .PHONY: teardown-debug
 teardown-debug:
-	limactl stop dev-debug || limactl delete dev-debug
+	limactl stop dev-debug || true
+	limactl delete dev-debug
 
 .PHONY: start
 start:
