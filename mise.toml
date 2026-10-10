@@ -1,0 +1,17 @@
+# optional tool manifest for this repo - `mise install` here provisions the
+# tools the flows expect on PATH, or put the same binaries there any other
+# way (each flow's README documents its own fallback); nothing else in the
+# repo invokes mise
+#
+# entries resolve through mise's registry to the aqua backend, which tracks
+# current releases (tart ships 2.40.x while nixpkgs still carries 2.30.x;
+# the cirruslabs brew tap formula does not parse on current Homebrew at all)
+[tools]
+# NixOS VMs on macOS - tart/nixos
+tart = { version = "latest", os = ["macos/arm64"] }
+# limactl and lima - lima/*
+lima = "latest"
+# required by lima/bin/start-or-resume.sh
+jq = "latest"
+# Apple container machine - apple/container-machine/nixos
+container = { version = "latest", os = ["macos/arm64"] }

@@ -10,3 +10,18 @@ Currently there is:
   - [lima/tailscale](./lima/tailscale) - Tailscale inside a Lima VM
   - [lima/screenshare](./lima/screenshare) - VNC VM working around `open vnc://` on macOS
 - [tart/nixos](./tart/nixos) - NixOS inside a [tart](https://github.com/cirruslabs/tart) VM
+
+## Tools
+
+[mise.toml](./mise.toml) declares the tools these flows expect on `PATH` (`tart`, `lima`, `jq`, `container`, etc.).
+
+- If you already have them, or will install them some other way, skip this section.
+- If you have [mise](https://mise.jdx.dev) (or prefer provisioning with it):
+  - `mise install` in the repo root installs whatever is missing
+    - once per machine, and again after editing mise.toml
+      - then activation gets them on `PATH`
+
+- **Activated** - `eval "$(mise activate zsh)"` (or your shell) in the shell rc ([docs](https://mise.jdx.dev/getting-started.html#activate-mise)); entering the repo then puts the tools on `PATH` in every new shell. Nothing to do per shell.
+- **Not activated** - not an expected setup, just a one-off stopgap: [`mise env`](https://mise.jdx.dev/cli/env.html#mise-env) loads the current shell once (`eval "$(mise env)"`).
+
+The flows above never invoke `mise` themselves.
