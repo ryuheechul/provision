@@ -7,7 +7,7 @@
 # current releases (tart ships 2.40.x while nixpkgs still carries 2.30.x;
 # the cirruslabs brew tap formula does not parse on current Homebrew at all)
 [tools]
-# NixOS VMs on macOS - tart/nixos
+# NixOS VMs on macOS - apple/tart/nixos
 tart = { version = "latest", os = ["macos/arm64"] }
 # limactl and lima - lima/*
 lima = "latest"
