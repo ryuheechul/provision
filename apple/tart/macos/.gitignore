@@ -1,0 +1,3 @@
+# the marker only tells make that this host already has the VM; it is
+# per-machine state, not source
+.vm-created

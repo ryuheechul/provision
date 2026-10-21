@@ -3,8 +3,10 @@ Where I write code to provision (probably just) Virtual Machines that hopfully i
 
 Currently there is:
 
-- [apple/container-machine/nixos](./apple/container-machine/nixos) - NixOS config for an Apple [Container machine](https://github.com/apple/container/blob/main/docs/container-machine.md)
-- [apple/tart/nixos](./apple/tart/nixos) - NixOS inside a [tart](https://github.com/cirruslabs/tart) VM
+- [apple](./apple) - VM runtimes that require Apple Silicon macOS
+  - [apple/container-machine/nixos](./apple/container-machine/nixos) - NixOS config for an Apple [Container machine](https://github.com/apple/container/blob/main/docs/container-machine.md)
+  - [apple/tart/nixos](./apple/tart/nixos) - NixOS inside a [tart](https://github.com/cirruslabs/tart) VM
+  - [apple/tart/macos](./apple/tart/macos) - macOS inside a tart VM (prebuilt Cirrus image)
 - [lima](./lima) - Provision VMs with [Lima](https://github.com/lima-vm/lima)
   - [lima/dev](./lima/dev) - Dev VM on Lima's default template
   - [lima/nixos](./lima/nixos) - NixOS inside a Lima VM (reference for comparing against the [container machine](./apple/container-machine/nixos))

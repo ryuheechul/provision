@@ -9,8 +9,14 @@ iso_file = $(channel).iso
 # iso download is never mistaken for a complete one on the next run
 .DELETE_ON_ERROR:
 
+# fail early with a useful hint instead of a bare "command not found" - tart is
+# declared in the repo's mise.toml (see the root README for `mise install`)
+.PHONY: check-tart
+check-tart:
+	@command -v tart >/dev/null || { echo "tart not found - run 'mise install' at the repo root, or put tart on PATH" >&2; exit 1; }
+
 .PHONY: run
-run: .tart-installed .vm-created
+run: check-tart .vm-created
 	tart run nixos-vm
 
 .PHONY: delete
@@ -22,14 +28,6 @@ delete:
 	tart create --linux nixos-vm \
 	&& tart run --disk $(iso_file) nixos-vm \
 	&& touch .vm-created
-
-# via nixpkgs rather than the cirruslabs brew tap: the tap formula does not
-# parse on current Homebrew (depends_on macos DSL removal); tart carries an
-# unfree license so allow it for this one invocation only; command -v keeps
-# this a no-op when tart is already on PATH by any means
-.tart-installed:
-	command -v tart >/dev/null || NIXPKGS_ALLOW_UNFREE=1 nix profile add --impure nixpkgs#tart
-	touch .tart-installed
 
 $(iso_file):
 	curl -fL -o $(iso_file) $(img)

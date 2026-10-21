@@ -1,6 +1,5 @@
-# markers only tell make that this host already has tart/the VM; they are
+# the marker only tells make that this host already has the VM; it is
 # per-machine state, not source
-.tart-installed
 .vm-created
 # multi-GB channel ISO downloaded by the iso target
 *.iso
