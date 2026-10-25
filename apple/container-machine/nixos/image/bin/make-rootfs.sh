@@ -50,7 +50,7 @@ done <<< "$BIN_SHIMS"
 # GC roots manifest (see machine-configuration/image-gcroots.nix): nix only
 # protects store paths reachable from roots (profiles, gcroots), and it
 # cannot see that rootfs files reference anything - /init -> image system,
-# /bin/{cut,id,chown} -> image coreutils, /bin/grep -> image gnugrep, and
+# the /bin shims -> image coreutils/gnugrep/getent, and
 # every other store path the grafts above or the tarball wrote outside
 # /nix. A guest-run nix-collect-garbage would keep the files but collect
 # their targets: boot then dies at exec /sbin/init (127) with no way back

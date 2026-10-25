@@ -61,7 +61,9 @@ What makes it work - each detailed further down:
   ([Boot Sequence](#boot-sequence)).
 - **The provisioned user is reconciled, not baked in** - no username
   or uid lives in the image; `container` provisioning writes the macOS
-  account into a mutable `/etc/passwd` on first boot, and the
+  account into a mutable `/etc/passwd` (once at first boot on 1.5, on
+  every boot on 1.6, where it also has to run against a minimal PATH -
+  see [compat shims](#compat-shims)), and the
   restore-user service plus an activation snippet run after the
   declarative `users` activation on every switch (a bare config
   restores the Apple user, a config that declares the user wins)
@@ -351,8 +353,8 @@ sequenceDiagram
     rt->>wrap: vmexec starts the runtime wrapper (virtiofs, not in the image)
     wrap->>wrap: set hostname, chown ssh-auth.sock to your uid/gid
     wrap->>init: exec the image's /sbin/init
-    wrap-->>prov: separate managed process: create-user.sh (runs once)
-    prov->>init: write the macOS account to /etc/passwd
+    wrap-->>prov: separate managed process: user setup (1.5: once, 1.6: every boot)
+    prov->>init: write the macOS account to /etc/passwd (no-op once present)
     Note over prov,shell: root is declared at /bin/container-machine-shell (baked). The provisioned user starts at /bin/sh and is re-pointed by shell-fix.
     init->>shell: exec the passwd shell as soon as the vminitd API answers
     Note over shell,act: stage-2 (the activated system) has NOT linked /run/current-system yet
@@ -364,9 +366,9 @@ sequenceDiagram
 
 ### What Follows From That
 
-- **proof** - `/proc/1/environ` still carries the wrapper's exports (`CONTAINER_*`, `CONTAINER_SHELL`); `CONTAINER_SHELL` appears in no host binary and is set only by that script
-- **provisioning** - a second managed process runs right after the init chain, **before stage-2 activation**: the first boot's `/etc/sudoers.d/<user>` mtime lands inside its window, ahead of the `booting system configuration` line, so the account comes from `create-user.sh` (which appends the passwd/group/shadow lines and that sudoers rule) rather than from any image or activation step
-- **marker** - the same script's marker, `/etc/.machine.initialized`, is a host-backed virtiofs file rather than image state, so it keeps its first-boot mtime across reboots
+- **proof** - `/proc/1/environ` still carries the wrapper's exports (`CONTAINER_MACHINE_ID`, and on 1.5 `CONTAINER_SHELL`); they come from the runtime's `/sbin.machine/init` on the host-written virtiofs mount, not from the image. 1.6 no longer exports `CONTAINER_SHELL` (its setup script sets it only as a local when picking a shell), so use `CONTAINER_MACHINE_ID` for that check there
+- **provisioning** - a second managed process runs right after the init chain, **before stage-2 activation**: `/etc/sudoers.d/<user>` is written inside that window, ahead of the `booting system configuration` line. How that process runs depends on the `container` version - see [`change-adaptation.md`](./docs/change-adaptation.md) for the 1.5 vs 1.6 difference and what to do when the runtime changes.
+- **marker** - `/etc/.machine.initialized` is a host-backed virtiofs file rather than image state, so it keeps its first-boot mtime across reboots. 1.5 uses it to skip setup; 1.6 ignores it and no-ops on the existing account instead
 - **hostname** - the wrapper's `echo ${CONTAINER_MACHINE_ID} > /etc/hostname` does succeed - the image ships no `/etc/hostname` - but stage-2 activation replaces that file with the symlink generated from `networking.hostName` before systemd reads it. So the hostname is entirely the config's: the machine comes up as `nixos-cm` because [`machine-configuration/default.nix`](./machine-configuration/default.nix) pins it to match the machine id
 
 ### After Activation: The PATH Wrapper
@@ -434,7 +436,8 @@ Same guest `rootfsTree` either way; only packaging and how `container` ingests i
 - [`machine-configuration/image-gcroots.nix`](./machine-configuration/image-gcroots.nix) - `containerMachineImageGcroots` activation: re-registers the image's rootfs grafts as indirect GC roots so a guest `nix-collect-garbage` cannot unlink them (see [Garbage collection safety](#garbage-collection-safety)).
 - [`machine-configuration/shell.nix`](./machine-configuration/shell.nix) - `container-machine-shell` PATH wrapper, the `/bin/container-machine-shell` wait-for-`/run/current-system` bootstrap it hands off to, shell-fix service, declarative `/run/current-system/sw/*` shells resolved to store paths in the mutable passwd (first-boot exec race), `USER`/`LOGNAME` profile hooks.
 - [`machine-configuration/sudo.nix`](./machine-configuration/sudo.nix) - direct setuid sudo, pam_permit account rules for sudo and su, sudo-fix service.
-- [`machine-configuration/users.nix`](./machine-configuration/users.nix) - mutable passwd, restore-user service + activation script (Apple-provisioned account).
+- [`machine-configuration/users.nix`](./machine-configuration/users.nix) - mutable passwd, restore-user service + activation script (Apple-provisioned account), and the `/usr/local/bin` links for the commands Apple's user setup calls.
+- [`machine-configuration/user-setup-tools.nix`](./machine-configuration/user-setup-tools.nix) - the command set Apple's user setup needs (1.5 first boot, 1.6 every boot), shared by the image `/bin` graft and the `/usr/local/bin` activation links.
 - [`machine-configuration/runtime.nix`](./machine-configuration/runtime.nix) - boot quirk: `postBootCommands` (`/run/systemd` before systemd starts).
 - [`machine-configuration/nix.nix`](./machine-configuration/nix.nix) - Nix feature defaults for bare `nixos-rebuild switch` (`experimental-features`); channel and `NIX_PATH` come from upstream `nix.channel.enable` / `nix.nixPath` defaults via `/etc/set-environment`, which `make switch` sources instead of hardcoding.
 
@@ -475,15 +478,33 @@ The image is aarch64-linux, so macOS cannot build it natively.
 ## User Model
 
 The image initially manages no user declaratively - `container`'s own
-provisioning (host-side `/sbin.machine/create-user.sh`, not image content,
-run once at first boot) writes the
-macOS account into `/etc/passwd` as `user:uid:gid::/home/<user>:shell`,
-creates and persists `/home/<user>` (a plain, empty, normal-Linux home -
-not bridged to the mounted macOS `/Users/<user>`). After the first
-`nixos-rebuild switch` with your dotfiles, that user becomes declarative
+provisioning (host-side, not image content) writes the macOS account
+into `/etc/passwd` as `user:uid:gid::/home/<user>:shell` and creates
+and persists `/home/<user>` (a plain, empty, normal-Linux home - not
+bridged to the mounted macOS `/Users/<user>`). How the runtime
+provisions the user depends on the `container` version - see
+[`change-adaptation.md`](./docs/change-adaptation.md) for the 1.5 vs
+1.6 difference and what to do when the runtime changes.
+
+That minimal PATH is why the image grafts every command the setup script
+calls into `/bin` (`getent`, `date`, `mkdir`, `cp`, `chown`, `chmod`,
+`tr`, plus `cut`, `grep`, `id`), and why
+[`users.nix`](./machine-configuration/users.nix) links the same set into
+`/usr/local/bin` on every activation. An image built for 1.5 has no such
+graft, and 1.6 would otherwise read empty passwd lookups and refuse the
+home it created on an earlier boot:
+
+```
+container machine: refusing to use existing path '/home/<user>' as the home directory for user '<user>'
+```
+
+Both locations are covered in [compat shims](#compat-shims).
+
+After the first `nixos-rebuild switch` with your dotfiles, that user
+becomes declarative
 via `nix/nixos/user.nix` (`users.users.<name>` + `wheel` + `zsh`). No
 username or uid is hard-coded in the image - the boot services find the
-user from the `create-user.sh` sudoers marker.
+user from the `/etc/sudoers.d/<user>` marker.
 
 That user's shell starts as a bare `/bin/sh` with no PATH to the NixOS
 profile. `container-machine-shell-fix` re-points that initial entry
@@ -519,10 +540,14 @@ guest stays healthy (the latter survives `nixos-rebuild switch`):
 | `nosuid` `/run` and unsupported capability probing | A direct setuid copy of `sudo` is installed at `/usr/local/bin/sudo` on the persistent root filesystem; NixOS capability wrappers are disabled |
 | sshd login dies at PAM account once wrappers are cleared | `pam_unix` execs `/run/wrappers/bin/unix_chkpwd` (sshd's unprivileged privsep child cannot read `/etc/shadow` itself), so clearing wrappers removes the helper and every login is rejected right after key acceptance with `fatal: Access denied for user <name> by PAM account configuration [preauth]`. Re-adding a `security.wrappers` entry does not help: the compiled wrapper's capability probing fails on this kernel (`cannot get capabilities for /proc/self/exe: Not supported`) and it exits before execing the helper. The `suid-sgid-wrappers` unit's `postStart` installs the raw `4755` helper right after the wrappers dir is (re)built - `/run/wrappers` is its own tmpfs without `nosuid`, unlike `/run` itself |
 | Container-created user can't reach nix tools / `sudo` | `container-machine-shell-fix` re-points its shell at the `/bin` bootstrap (which hands off to the PATH wrapper); Apple provisioning supplies the sudoers rule and `container-machine-sudo-fix` installs direct sudo |
+| container 1.6 reruns Apple's user setup on every boot from a minimal PATH (`getent`, `date`, `mkdir`, `cp`, `chmod`, `tr` absent there) | [`image/common.nix`](./image/common.nix) grafts every command the setup script calls into `/bin` (fresh machines), and [`machine-configuration/users.nix`](./machine-configuration/users.nix) links the same set into `/usr/local/bin` on every activation (machines built from an older image, repaired by `nixos-rebuild switch`). Without them 1.6 reads empty passwd lookups and refuses the existing home with `container machine: refusing to use existing path '/home/<user>' as the home directory for user '<user>'` (see [User model](#user-model)) |
 | Locked Apple user fails PAM account checks | The sudo account rule uses `pam_permit` because `NOPASSWD` skips authentication but does not bypass `pam_unix` account validation; `su` meets the same rejection on the shell-startup group re-exec path (`sudo su`), where it surfaced as `su: Authentication service cannot retrieve authentication info (Ignored)` on the first shell after boot. Only the account phase is replaced for `su` - the auth phase and other services keep `pam_unix`, and account expiry stays unenforced for `su` (sshd/login still enforce it). Downstream configurations can replace these compatibility rules by setting `security.pam.services.sudo.rules.account` or `security.pam.services.su.rules.account` |
 | Legacy `nixos-rebuild` needs a nixpkgs path | Upstream `nix.channel.enable` + `nix.nixPath` defaults provide it through `/etc/set-environment` (login shells load it; `make switch` sources it explicitly). Downstream configurations can override `nix.nixPath` and the Makefile picks the change up automatically |
 | Nix daemon access and feature defaults | Only `root` is trusted by default; `nix-command` and flakes are enabled as defaults so downstream configurations can replace them |
 | Guest `nix-collect-garbage` unlinks the image's rootfs grafts (`/sbin/init -> /init`, the `/bin` shims - store paths no profile references), so the machine stops booting | The image build writes `/etc/nixos/image-gcroots.manifest` (rootfs references outside `/nix`), and the `containerMachineImageGcroots` activation turns it into symlinks under `/nix/var/nix/gcroots/image/` on each boot and switch - the links live outside any generation, so image-era targets stay rooted through any number of switches, while generation-following grafts like `/init` ride the system profile (see [Garbage collection safety](#garbage-collection-safety)) |
+See [`docs/change-adaptation.md`](./docs/change-adaptation.md) for how this repo adapts to breaking upstream
+`container` changes — currently covering the 1.5 -> 1.6 user-setup change
+(how we build the image, and how to restore an unbootable machine).
 
 ## Prior Art
 
@@ -603,14 +628,13 @@ Two pieces keep guest GC safe:
    them, before any user command can run GC.
 
 Roots then split by what the graft follows. Frozen image references -
-the image's own system, the `/bin` coreutils/gnugrep shims, the
-`install-docker-init` bootloader - ride the manifest links for the
+the image's own system, the `/bin` shims (coreutils, gnugrep, getent),
+the `install-docker-init` bootloader - ride the manifest links for the
 machine's lifetime. Grafts that follow the current generation - `/init`,
 rewritten by `install-docker-init` (`ln -fs $systemConfig/init /init`)
 on every switch, and `/bin/sh`, relinked to the current bash by the
 `binsh` activation snippet - are rooted by the system profile while
-current, and a switch repoints them before the old generation becomes
-collectable. So every live target is referenced by either the profile
+current, and a switch repoints them before the old generation becomescollectable. So every live target is referenced by either the profile
 or the manifest roots at all times, while old generations and their
 exclusive closure still collect. Verified end-to-end: after
 `nix-collect-garbage --delete-older-than 1d` plus `-d` freed 1,328

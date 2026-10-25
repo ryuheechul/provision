@@ -37,15 +37,13 @@ let
     exec ${pkgs.bashInteractive}/bin/bash "$@"
   '';
 
-  # /bin shims the system tarball alone doesn't ship (early boot / provisioning
-  # expect them before the system profile is on PATH). One attrset = one place
-  # to add or drop a shim. Serialized as "name=path" lines for make-rootfs.sh.
-  binShims = {
-    chown = "${pkgs.coreutils}/bin/chown";
-    cut = "${pkgs.coreutils}/bin/cut";
-    grep = "${pkgs.gnugrep}/bin/grep";
-    id = "${pkgs.coreutils}/bin/id";
-  };
+  # /bin shims the system tarball alone doesn't ship: the runtime's user setup
+  # needs these before the system profile is on PATH (container >= 1.6 reruns
+  # setup on every boot, so this is not just a first-boot concern). One list,
+  # shared with machine-configuration/users.nix, which installs the same
+  # commands for machines created from an older image. Serialized as
+  # "name=path" lines for make-rootfs.sh.
+  binShims = import ../machine-configuration/user-setup-tools.nix { inherit pkgs; };
   binShimsEnv = lib.concatStrings (lib.mapAttrsToList (name: path: "${name}=${path}\n") binShims);
 
   ociLayout = pkgs.writeText "oci-layout" ''

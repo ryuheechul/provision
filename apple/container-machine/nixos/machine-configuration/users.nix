@@ -24,6 +24,22 @@ let
       printf '%s:!:19000:0:99999:7:::\n' "$user" >> /etc/shadow
     done
   '';
+
+  # Apple's user setup needs these commands on its minimal PATH
+  # (user-setup-tools.nix explains why). The image grafts them into /bin, but
+  # a machine created from an image built before that graft has no such files:
+  # link the same set into /usr/local/bin, which is first on the runtime PATH
+  # and lives on the persistent rootfs. /bin/sh itself is replaced by NixOS's
+  # own activation (environment.binsh), so /bin is not a durable place.
+  userSetupTools = import ./user-setup-tools.nix { inherit pkgs; };
+  installUserSetupTools = pkgs.writeShellScript "container-machine-user-setup-tools" (
+    ''
+      ${pkgs.coreutils}/bin/install -d -m 0755 /usr/local/bin
+    ''
+    + lib.concatStrings (lib.mapAttrsToList (name: path: ''
+      ${pkgs.coreutils}/bin/ln -sfn ${path} /usr/local/bin/${name}
+    '') userSetupTools)
+  );
 in
 {
   # Explicit pin (matches NixOS default): passwd must stay mutable so
@@ -33,10 +49,11 @@ in
   # mkDefault so a downstream plain assignment can still override.
   users.mutableUsers = lib.mkDefault true;
 
-  # Apple provisions the user only when the machine is initially created.
-  # After a restart, NixOS may regenerate /etc/passwd while /home/<user>
-  # remains on disk - restore the runtime user from home ownership. Runs
-  # before the sudo/shell fixes; a declarative users.users entry always wins.
+  # NixOS may regenerate /etc/passwd while /home/<user> remains on disk -
+  # restore the runtime user from home ownership. container >= 1.6 also reruns
+  # its own setup every boot; the image shims (user-setup-tools.nix) are what
+  # keep that succeeding. Runs before the sudo/shell fixes; a declarative
+  # users.users entry always wins.
   systemd.services.container-machine-user-fix = {
     description = "Restore the Apple container machine user after reboot";
     wantedBy = [ "multi-user.target" ];
@@ -59,4 +76,9 @@ in
     deps = [ "users" ];
     text = "${restoreMachineUser}\n";
   };
+
+  # container >= 1.6 reruns Apple's user setup on every boot, so keep the
+  # commands it needs reachable even on a machine built from an older image.
+  # Runs on every switch and every boot, and is cheap and idempotent.
+  system.activationScripts.containerMachineUserSetupTools.text = "${installUserSetupTools}\n";
 }
