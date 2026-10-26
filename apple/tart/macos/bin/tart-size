@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+#
+# bin/tart-size — show the real space cost of a tart VM and its cached base image.
+#
+# `tart clone` is copy-on-write under the hood: the VM and the cached base image
+# share APFS blocks, so `tart list` / `du` double-counts the shared base. These
+# figures are the allocated size of each asset; removing only the cached base
+# image frees only the blocks the VM has overwritten since it was cloned, not
+# the full image. Use `make clean` to reclaim the VM and the base image entirely.
+#
+# Usage: bin/tart-size <vm-name> <image-reference>
+#   e.g. bin/tart-size macos-vm ghcr.io/cirruslabs/macos-golden-gate-base:latest
+#
+# Runs from any working directory: all paths are absolute under $HOME.
+
+set -euo pipefail
+
+# Resolve this script's own directory first so it behaves identically when
+# invoked from any working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+vm="${1:?missing VM name - usage: tart-size <vm-name> <image-reference>}"
+image="${2:?missing image reference - usage: tart-size <vm-name> <image-reference>}"
+
+# All paths below are absolute under $HOME, so CWD doesn't matter.
+
+tart_cache="${HOME}/.tart/cache"
+vm_dir="${HOME}/.tart/vms/${vm}"
+
+# image reference "host/ns/name:tag" -> "host/ns/name/tag" under the OCI cache.
+# This matches tart's layout for a `:tag` reference (a symlink to the digest-
+# addressed directory). A digest reference (@sha256:...) is not handled.
+base_dir="${tart_cache}/OCIs/${image//:/\/}"
+
+echo "== space used by assets related to ${vm} =="
+if [ -d "${vm_dir}" ]; then
+    echo "  VM:        $(du -sh "${vm_dir}" | cut -f1)"
+else
+    echo "  VM:        not created"
+fi
+if [ -L "${base_dir}" ]; then
+    base_target="$(readlink "${base_dir}")"
+    echo "  base image:  $(du -sh "${base_target}" | cut -f1)  (cached as ${image})"
+elif [ -d "${base_dir}" ]; then
+    echo "  base image:  $(du -sh "${base_dir}" | cut -f1)  (cached as ${image})"
+else
+    echo "  base image:  not cached"
+fi
+echo
+echo "note: the VM and the base share APFS clone blocks, so these figures"
+echo "double-count the shared base; deleting the base image alone frees only"
+echo "the VM's divergence, not its full size."

@@ -20,6 +20,7 @@ boots ready to use - no installer, no Setup Assistant.
     make service-uninstall  # unload and remove that service
     make delete           # remove the VM, keep the downloaded base image
     make clean            # also remove the base image
+    make size             # show true space cost of VM + base image
 
 Resources default to 4 CPUs / 8 GiB; override them at create time:
 
@@ -86,6 +87,9 @@ Notes:
   SSH enabled and the `admin` / `admin` account.
 - `tart clone` is copy-on-write under the hood: the VM claims almost no extra
   space until written, and every clone shares the base image's blocks.
+- Removing only the cached base image frees little because of that block
+  sharing; `make size` shows each asset's real cost, and `make clean`
+  reclaims the VM and the base image entirely.
 - The codename is fixed when the VM is cloned, so `make delete` before
   switching; resources can also be changed later with `tart set`.
 - The ASIF disk image grows with guest writes and shrinks again when files are

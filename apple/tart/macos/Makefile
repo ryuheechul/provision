@@ -90,6 +90,14 @@ delete:
 	-tart delete $(vm)
 	rm -f .vm-created
 
+# show the real space cost of the VM and its cached base image. tart clone is
+# copy-on-write, so `tart list` / `du` double-count the shared APFS blocks;
+# deleting only the base image frees just the VM's divergence, not its full
+# image. `make clean` reclaims the VM and the base image entirely.
+.PHONY: size
+size:
+	@./bin/tart-size $(vm) $(image)
+
 .PHONY: clean
 clean: delete
 	-tart delete $(image)
