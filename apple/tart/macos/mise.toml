@@ -1,0 +1,24 @@
+# Per-user service (macOS LaunchAgent), managed by mise's launchd bootstrap.
+# `make service-install` supplies TART_BIN (the tart resolved on PATH at
+# install time); running `mise bootstrap` directly falls back to mise's default
+# data dir and its `latest` symlink, which survives upgrades. Paths below use
+# `~`, which mise expands when it renders the plist.
+[bootstrap.macos.launchd.agents.tart-macos]
+# launchd requires an absolute ProgramArguments[0] - a bare "tart" exits with
+# EX_CONFIG (78) even when PATH contains its bin directory, so resolve it here
+# instead of using environment.PATH.
+program = "{{ env.TART_BIN | default(value='~/.local/share/mise/installs/tart/latest/tart.app/Contents/MacOS/tart') }}"
+# --vnc hands the display to the host's Screen Sharing app via NSWorkspace, so
+# it needs the gui/<uid> session this LaunchAgent loads into. Do not add
+# --no-graphics: combined with --vnc it prints the VNC URL instead of opening
+# Screen Sharing. The VM name matches `vm` in the Makefile.
+args = ["run", "--vnc", "macos-vm"]
+working_directory = "{{ config_root }}"
+# start at apply and at every login; retry a failed boot (tart exits non-zero
+# when its 60s wait for the guest IP expires), but leave a clean guest shutdown
+# alone until the next login
+run_at_load = true
+keep_alive_on_failure = true
+throttle_interval = 60
+stdout_path = "~/Library/Logs/tart-service-macos-vm.log"
+stderr_path = "~/Library/Logs/tart-service-macos-vm.err.log"

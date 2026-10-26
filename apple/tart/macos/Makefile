@@ -5,9 +5,13 @@ image := ghcr.io/cirruslabs/macos-$(codename)-base:latest
 vm := macos-vm
 cpu ?= 4
 memory ?= 8192
+# per-user service declared in mise.toml; the name becomes the label dev.mise.<name>
+service := tart-macos
 
-# tart is called as-is rather than resolved through mise's 'latest' symlink:
-# the sandbox_extension warning it can print is harmless (see the README)
+# the run targets call tart as-is rather than resolving it through mise's
+# 'latest' symlink: the sandbox_extension warning it can print is harmless
+# (see the README). The service bakes in the resolved path instead, since
+# launchd has no shell PATH.
 
 # delete the target when its recipe fails or is interrupted, so a half-made
 # clone is never mistaken for a complete one on the next run
@@ -18,6 +22,12 @@ memory ?= 8192
 .PHONY: check-tart
 check-tart:
 	@command -v tart >/dev/null || { echo "tart not found - run 'mise install' at the repo root, or put tart on PATH" >&2; exit 1; }
+
+# the service is applied with mise's launchd bootstrap, so mise (not tart)
+# is the tool that must be on PATH for the service-* targets
+.PHONY: check-mise
+check-mise:
+	@command -v mise >/dev/null || { echo "mise not found - install mise (https://mise.jdx.dev), or run 'tart run --vnc $(vm)' manually" >&2; exit 1; }
 
 .PHONY: run
 run: check-tart .vm-created
@@ -30,6 +40,50 @@ run-vnc: check-tart .vm-created
 .PHONY: run-headless
 run-headless: check-tart .vm-created
 	tart run --no-graphics $(vm)
+
+# mise parses this directory's mise.toml for every bootstrap command, and a
+# config with templates is not trusted until it is marked so
+.PHONY: trust-mise
+trust-mise: check-mise
+	@mise trust -q mise.toml
+
+# register `tart run --vnc` as a per-user service. mise owns the plist
+# (~/Library/LaunchAgents/dev.mise.$(service).plist) and its load/unload, so
+# applying and removing are each one command. RunAtLoad starts the VM now too.
+.PHONY: service-install
+service-install: trust-mise check-tart .vm-created
+	TART_BIN="$$(command -v tart)" mise bootstrap macos launchd-agents apply --yes
+	@echo "registered dev.mise.$(service) - starts now and at every login"
+	@echo "logs: $(HOME)/Library/Logs/tart-service-macos-vm.log"
+
+# stop the VM but keep the service registered. `tart stop` sends SIGINT, which
+# makes tart shut the guest down and exit 0, so keep_alive_on_failure does not
+# bring it back until the next login or `make service-start`.
+.PHONY: service-stop
+service-stop: check-tart
+	@if launchctl print gui/$$(id -u)/dev.mise.$(service) 2>/dev/null | grep -q 'state = running'; then \
+		tart stop $(vm) \
+		&& echo "stopped $(vm) - dev.mise.$(service) is still registered; 'make service-start' boots it again"; \
+	else \
+		echo "$(vm) is not running"; \
+	fi
+
+# kickstart the loaded job without re-registering or re-rendering the plist
+.PHONY: service-start
+service-start:
+	@launchctl print gui/$$(id -u)/dev.mise.$(service) >/dev/null 2>&1 || { echo "dev.mise.$(service) is not registered - run 'make service-install' first" >&2; exit 1; }
+	launchctl kickstart gui/$$(id -u)/dev.mise.$(service)
+
+.PHONY: service-status
+service-status: trust-mise
+	@mise bootstrap macos launchd-agents status
+
+# unloading also stops the tart process launchd started; `make service-stop`
+# first if the guest should shut down gracefully
+.PHONY: service-uninstall
+service-uninstall: trust-mise
+	-mise bootstrap services remove $(service)
+	@echo "unregistered dev.mise.$(service)"
 
 .PHONY: delete
 delete:
