@@ -10,7 +10,7 @@ Flow: build the image, create the machine, shell in, then `nixos-rebuild switch`
 
 ## Troubleshoot
 
-Symptoms first, then the fix. All verified on `container` CLI 1.5.0 (macOS 27).
+Symptoms first, then the fix. Verified on `container` CLI 1.5.0 (macOS 27), unless an entry says otherwise.
 
 ### Upgraded the CLI but everything still behaves like the old version
 
@@ -68,3 +68,32 @@ Two culprits, both under `~/Library/Application Support/com.apple.container/`:
 - No `machine start` subcommand: a stopped machine boots on the next `machine run`.
 - Machines created with `--no-boot` cannot be booted by `run` (fails with `Operation not supported by device`).
 - `machine run` flattens its arguments through a shell, so every argument must be a single word; run compound commands through piped stdin with `-i` instead.
+
+### The shell right after a guest reboot is half-booted
+
+Verified on `container` 1.6.1.
+
+- Symptoms: after `reboot` inside the machine, the next `container machine run` succeeds but the shell is not really up yet - `systemctl is-system-running` prints `offline` and `System has not been booted with systemd as init system (PID 1).`, and `systemctl --failed` fails with `Failed to connect to system scope bus via local transport: Host is down`.
+- Cause: `run` execs as soon as `vmexec` accepts a connection, which can be before the runtime's `/sbin.machine/init` has handed off to the image's `/sbin/init`. PID 1 is still the runtime wrapper at that point, so nothing is listening on the system bus yet. The window is short (about 15s observed) and `run` has no readiness gate of its own.
+- Fix: wait for the guest rather than trusting the first prompt. The [nixos flavor](./nixos/) has `make wait-ready` (stage-2 + systemd + nix-daemon all up) and `make wait-exec` ("accepts exec" only). Anywhere else, poll until `systemctl is-system-running` prints `running` or `degraded`.
+
+### `machine run` fails with `failed to find target executable /sbin.machine/init`
+
+Verified on `container` 1.6.1.
+
+- Symptoms: `container machine list` reports `running`, but every `container machine run` (with or without `--root`) fails with
+
+  ```
+  Error: failed to find target executable /sbin.machine/init
+  ```
+
+- Cause: the guest has already shut down - typically after a `reboot` inside the machine - but something is still attached (an interactive `machine run -i -t` left open, a hung client, a PTY nobody closed), so the record stays `running` and the runtime keeps trying to exec into a guest whose read-only `/sbin.machine` virtiofs mount died with it. The message is misleading: it means "the guest is gone", not "the file is missing". Normally a guest reboot moves the machine to `stopped` within seconds and the next `run` boots a fresh container; this only happens while an attachment holds the record open.
+- Fix: drop the attachment, then take the normal path.
+
+  ```sh
+  pkill -f 'container machine run'   # or close the stray terminal
+  container machine stop <name>      # force the state to reconcile
+  container machine run <name>       # boots a fresh container
+  ```
+
+  It also self-heals once the stuck session exits (about 10s observed).

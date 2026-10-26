@@ -95,6 +95,41 @@ to install tools. Recovery:
    the one generation they were installed under (valid until a guest GC
    collects those store paths).
 
+### Why only non-FHS flavors needed changes
+
+Nothing in 1.6's setup script is NixOS-specific. What decides whether a
+flavor needs an image change is **when that flavor populates `/bin`** - a
+split along FHS lines, not distro lines.
+
+- **FHS flavors - no change needed.** `/usr/bin` holds real binaries baked in
+  at image build (`apt-get install ...`), so the runtime's minimal `PATH`
+  resolves every command the setup script calls the moment the image exists.
+  There is no activation stage for 1.6's setup to run ahead of, and
+  `/sbin/init` comes from `systemd-sysv` (on Ubuntu noble the `systemd`
+  package alone ships `/lib/systemd/systemd` and no `/sbin/init`). The
+  downstream [Ubuntu flavor](https://github.com/ryuheechul/dotfiles-launchpad/tree/main/container-machine/ubuntu)
+  spells this out as "machine prerequisites: systemd + the tools apple's
+  user setup expects (POSIX sh, getent, date, coreutils)".
+- **Non-FHS flavors - needed the fix in (a).** NixOS is one of these rather
+  than a special case: `/bin` is populated by activation, which runs in
+  stage-2, i.e. *after* 1.6's setup exec. Until activation runs, only the
+  pre-activation bootstrap shell is there, so `getent`, `date`, `mkdir`,
+  `cp`, `chmod`, `tr` do not resolve on the runtime's `PATH`.
+
+So the two-layer fix exists solely because a flavor defers `/bin` to a late
+activation stage while 1.6 runs setup ahead of it. A flavor whose image
+already ships its tools in `/usr/bin` needs nothing for this transition.
+
+Checklist for the next setup-script change, per flavor:
+
+- Does the new script call a command the flavor lacks in `/bin` (or
+  `/usr/bin`) *before* activation?
+- Does the flavor have an activation stage that could populate it late? If
+  so, graft at image build (as in (a)) **and** link on activation; if not,
+  baking the tools into the image is enough.
+- Confirm on a fresh create under each supported runtime, not just the
+  current one (see Cross-version control below).
+
 ### Cross-version control
 
 After any fix, fresh-create a scratch machine under both the old and new
