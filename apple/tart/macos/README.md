@@ -13,6 +13,9 @@ boots ready to use - no installer, no Setup Assistant.
     make run              # pull (first call) + clone the vanilla image, boot it
     make run-vnc          # same, but hand the display to Screen Sharing
     make run-headless     # same, no window; `tart ip` then ssh in
+    make hostname         # print hostname of the running VM
+    make ping             # ping via hostname of the running VM
+    make exec             # exec zsh into the running VM
     make service-install    # register `tart run --vnc` as a per-user service
     make service-stop       # stop the VM, keeping the service registered
     make service-start      # boot it again via the registered service

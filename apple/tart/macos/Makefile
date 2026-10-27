@@ -41,6 +41,21 @@ run-vnc: check-tart .vm-created
 run-headless: check-tart .vm-created
 	tart run --no-graphics $(vm)
 
+# print hostname
+.PHONY: hostname
+hostname: check-tart .vm-created
+	@tart exec $(vm) hostname
+
+# ping hostname
+.PHONY: ping
+ping: check-tart .vm-created
+	@ping $$($(MAKE) -s hostname)
+
+# exec a command in the running VM; defaults to zsh
+.PHONY: exec
+exec: check-tart .vm-created
+	tart exec -it $(vm) zsh
+
 # mise parses this directory's mise.toml for every bootstrap command, and a
 # config with templates is not trusted until it is marked so
 .PHONY: trust-mise
